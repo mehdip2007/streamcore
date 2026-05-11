@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: mart_content_performance
+    description: >
+      Content performance metrics per video. Built from int_watch_sessions.
+      Answers: which videos get views, which get finished, which have quality issues.
+      Audience: content team, product managers.
+    columns:
+      - name: video_id
+        description: "Unique video identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: total_views
+        description: "Total number of play events for this video"
+        data_tests:
+          - not_null
+      - name: completion_rate_pct
+        description: "Percentage of viewers who watched at least 90% of the video"
+
+  - name: mart_device_quality
+    description: >
+      Streaming quality metrics broken down by device type and country.
+      Answers: which devices buffer most, which regions have problems.
+      Audience: engineering, infrastructure teams.
+    columns:
+      - name: device_type
+        description: "Device category"
+        data_tests:
+          - not_null
+      - name: buffering_status
+        description: "Health flag — healthy / warning / critical based on buffering rate"
+        data_tests:
+          - accepted_values:
+              values: ['healthy', 'warning', 'critical']

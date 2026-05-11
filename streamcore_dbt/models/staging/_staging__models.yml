@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: stg_video_views
+    description: "Cleaned video view events — one row per video play"
+    columns:
+      - name: event_id
+        description: "Unique event identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: user_id
+        data_tests:
+          - not_null
+      - name: video_id
+        data_tests:
+          - not_null
+      - name: device_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              values:
+                - mobile_ios
+                - mobile_android
+                - web_desktop
+                - web_mobile
+                - smart_tv
+                - tablet
+      - name: video_duration_seconds
+        data_tests:
+          - not_null
+
+  - name: stg_watch_progress
+    description: "Cleaned watch progress events — one row per 10-second tick"
+    columns:
+      - name: event_id
+        description: "Unique event identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: session_id
+        data_tests:
+          - not_null
+      - name: position_seconds
+        data_tests:
+          - not_null
+      - name: is_buffering
+        data_tests:
+          - not_null

@@ -1,0 +1,44 @@
+version: 2
+
+# ============================================================
+# Sources
+# ============================================================
+# Sources tell dbt about tables that ALREADY EXIST in your
+# database and were NOT created by dbt.
+#
+# In our case: the raw events table written by the Kafka consumer.
+#
+# Why declare sources instead of just hardcoding table names?
+#   1. dbt tracks lineage — it knows your models depend on this table
+#   2. dbt can test source freshness — alert if data stops arriving
+#   3. Single place to change if table moves or is renamed
+#   4. ref() and source() make the dependency graph visible in docs
+# ============================================================
+
+sources:
+  - name: streamcore_raw
+    description: "Bronze layer — raw events written by Kafka consumer"
+    schema: streamcore_raw
+    tables:
+      - name: events
+        description: "All raw events from the streaming pipeline — video views and watch progress"
+        columns:
+          - name: event_id
+            description: "Unique identifier for each event"
+            data_tests:
+              - unique
+              - not_null
+          - name: event_type
+            description: "Type of event — video_view or watch_progress"
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['video_view', 'watch_progress']
+          - name: event_timestamp
+            description: "When the event occurred (UTC)"
+            data_tests:
+              - not_null
+          - name: payload
+            description: "Full event payload as JSONB"
+            data_tests:
+              - not_null

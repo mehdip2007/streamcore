@@ -1,36 +1,55 @@
-
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
 name: 'streamcore_dbt'
 version: '1.0.0'
+config-version: 2
 
-# This setting configures which "profile" dbt uses for this project.
+# Must match the key in ~/.dbt/profiles.yml
 profile: 'streamcore_dbt'
 
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
+# Where dbt looks for models
 model-paths: ["models"]
-analysis-paths: ["analyses"]
 test-paths: ["tests"]
-seed-paths: ["seeds"]
 macro-paths: ["macros"]
-snapshot-paths: ["snapshots"]
 
-clean-targets:         # directories to be removed by `dbt clean`
-  - "target"
-  - "dbt_packages"
+# Where dbt writes compiled SQL (useful for debugging)
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
 
+# ============================================================
+# Model Configuration
+# ============================================================
+# This controls how dbt materializes each layer.
+#
+# MATERIALIZATION TYPES:
+#   view       - dbt creates a SQL VIEW (no data stored, query runs live)
+#                Fast to build, slow to query. Good for staging.
+#
+#   table      - dbt creates a full TABLE (data stored, query is fast)
+#                Slow to build, fast to query. Good for marts.
+#
+#   incremental - Only processes NEW rows since last run.
+#                 Best for large tables. We'll use this for intermediate.
+#
+# The hierarchy: project defaults → folder config → model config
+# More specific always wins.
+# ============================================================
 
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
-
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
 models:
   streamcore_dbt:
-    # Config indicated by + and applies to all files under models/example/
-    example:
+
+    staging:
+      # Staging models are views — lightweight, no storage cost.
+      # They're just cleaned windows into the raw data.
       +materialized: view
+      +schema: streamcore_staging
+
+    intermediate:
+      # Intermediate models are tables — they join staging models
+      # and the result is worth storing for performance.
+      +materialized: table
+      +schema: streamcore_intermediate
+
+    marts:
+      # Marts are tables — business-ready, queried frequently.
+      # Fast query time matters here.
+      +materialized: table
+      +schema: streamcore_marts
