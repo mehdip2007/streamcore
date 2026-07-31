@@ -23,6 +23,13 @@ Why ref() instead of source()?
   ref() points to OTHER dbt models.
   source() points to raw tables dbt didn't create.
   ref() ensures dbt runs dependencies in correct order.
+
+Postgres -> ClickHouse dialect notes (see stg_* models for JSON parsing):
+  - extract(epoch from (a - b))  ->  dateDiff('second', b, a)
+  - count(*) filter (where ...)  ->  countIf(...)             (ClickHouse idiom)
+  - x::numeric / y                ->  x / y                    (ClickHouse's `/`
+    is always float division, so no cast is needed the way Postgres needs one)
+  - nullif(x, y)                  ->  nullIf(x, y)              (camelCase)
 */
 
 with views as (
@@ -47,26 +54,25 @@ session_progress as (
         video_id,
 
         -- Latest position = how far they got in the video
-        max(position_seconds)                   as max_position_seconds,
+        max(position_seconds)                    as max_position_seconds,
 
         -- First and last event timestamps = actual watch duration
-        min(event_timestamp)                    as watch_start_at,
-        max(event_timestamp)                    as watch_end_at,
+        min(event_timestamp)                     as watch_start_at,
+        max(event_timestamp)                     as watch_end_at,
 
         -- Total elapsed time in seconds
-        extract(
-            epoch from (max(event_timestamp) - min(event_timestamp))
-        )::integer                              as watch_duration_seconds,
+        dateDiff('second', min(event_timestamp), max(event_timestamp))
+                                                  as watch_duration_seconds,
 
         -- Buffering stats
-        count(*) filter (where is_buffering)    as buffering_ticks,
-        count(*)                                as total_ticks,
+        countIf(is_buffering)                    as buffering_ticks,
+        count(*)                                 as total_ticks,
 
         -- Most common quality — mode approximation using max
-        max(quality)                            as dominant_quality,
+        max(quality)                             as dominant_quality,
 
         -- Average playback rate
-        round(avg(playback_rate)::numeric, 2)   as avg_playback_rate
+        round(avg(playback_rate), 2)             as avg_playback_rate
 
     from progress
     group by session_id, video_id
@@ -93,7 +99,7 @@ final as (
         v.initial_quality,
 
         -- Timing
-        v.event_timestamp                       as view_started_at,
+        v.event_timestamp                        as view_started_at,
         sp.watch_start_at,
         sp.watch_end_at,
         sp.watch_duration_seconds,
@@ -105,26 +111,26 @@ final as (
         -- Capped at 100% to handle edge cases from our simulator
         least(
             round(
-                (sp.max_position_seconds::numeric / nullif(v.video_duration_seconds, 0)) * 100,
+                (sp.max_position_seconds / nullIf(v.video_duration_seconds, 0)) * 100,
                 2
             ),
             100.00
-        )                                       as completion_pct,
+        )                                        as completion_pct,
 
         -- Did they finish? (watched at least 90%)
         case
             when sp.max_position_seconds >= v.video_duration_seconds * 0.9
             then true
             else false
-        end                                     as is_completed,
+        end                                      as is_completed,
 
         -- Buffering
         sp.buffering_ticks,
         sp.total_ticks,
         round(
-            (sp.buffering_ticks::numeric / nullif(sp.total_ticks, 0)) * 100,
+            (sp.buffering_ticks / nullIf(sp.total_ticks, 0)) * 100,
             2
-        )                                       as buffering_rate_pct,
+        )                                        as buffering_rate_pct,
 
         -- Quality
         sp.dominant_quality,

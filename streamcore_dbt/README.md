@@ -1,15 +1,34 @@
-Welcome to your new dbt project!
+# streamcore_dbt
 
-### Using the starter project
+dbt project for StreamCore's warehouse layer — targets **ClickHouse**, not Postgres directly. See
+`../CLAUDE.md`'s "dbt project" section for the full picture of why and how.
 
-Try running the following commands:
-- dbt run
-- dbt test
+## Setup
 
+```bash
+# From the repo root
+pip install -e ".[dbt]"                                      # dbt-core + dbt-clickhouse
+cp streamcore_dbt/profiles.example.yml ~/.dbt/profiles.yml    # first time only
 
-### Resources:
-- Learn more about dbt [in the docs](https://docs.getdbt.com/docs/introduction)
-- Check out [Discourse](https://discourse.getdbt.com/) for commonly asked questions and answers
-- Join the [chat](https://community.getdbt.com/) on Slack for live discussions and support
-- Find [dbt events](https://events.getdbt.com) near you
-- Check out [the blog](https://blog.getdbt.com/) for the latest news on dbt's development and best practices
+# ClickHouse + Postgres must be up
+docker compose up -d postgres clickhouse
+
+cd streamcore_dbt
+dbt debug   # sanity-check the connection
+dbt build   # = dbt run + dbt test, in dependency order
+```
+
+`dbt build` will create the `streamcore_raw.events` bridge table in ClickHouse on every run
+(idempotent — see `macros/postgres_bridge.sql`), so there's no separate setup step for that.
+
+## Layers
+
+- `models/staging/` — `stg_video_views`, `stg_watch_progress`: 1:1 cleaned windows over the raw events
+  bridge, parsed with ClickHouse's `JSONExtract*` functions.
+- `models/intermediate/` — `int_watch_sessions`: joins views + progress into full watch sessions.
+- `models/marts/` — `mart_content_performance`, `mart_device_quality`: business-ready aggregates.
+
+## Resources
+
+- [dbt docs](https://docs.getdbt.com/docs/introduction)
+- [dbt-clickhouse](https://github.com/ClickHouse/dbt-clickhouse)

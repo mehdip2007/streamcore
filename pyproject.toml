@@ -26,6 +26,13 @@ dev = [
     "ruff>=0.6.0",                 # Fast Python linter
     "mypy>=1.11.0",                # Type checking
 ]
+# dbt itself isn't a runtime dependency of the pipeline — it's a
+# separate project (streamcore_dbt/) with its own venv-worthy tooling.
+# This extra just gives it one documented, pinned install path instead
+# of "however you happen to have dbt installed."
+dbt = [
+    "dbt-clickhouse>=1.8,<1.9",
+]
 
 [build-system]
 requires = ["hatchling"]

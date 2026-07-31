@@ -1,10 +1,10 @@
 # dbt connection profile used ONLY inside the Airflow container.
 #
 # This is separate from the ~/.dbt/profiles.yml a developer keeps on
-# their host machine for manual `dbt run` — that one connects to
-# postgres via localhost:5432 (docker-compose's PLAINTEXT_HOST-style
-# port mapping), but this container talks to the `postgres` service by
-# its Docker network hostname instead.
+# their host machine for manual `dbt build` (see
+# streamcore_dbt/profiles.example.yml) — that one connects to
+# ClickHouse via localhost:8123, but this container talks to the
+# `clickhouse` service by its Docker network hostname instead.
 #
 # All values come from environment variables (see docker-compose.yml's
 # airflow service) so no credentials are hardcoded here.
@@ -12,11 +12,15 @@ streamcore_dbt:
   target: airflow
   outputs:
     airflow:
-      type: postgres
-      host: "{{ env_var('POSTGRES_HOST') }}"
-      port: "{{ env_var('POSTGRES_PORT') | int }}"
-      user: "{{ env_var('POSTGRES_USER') }}"
-      pass: "{{ env_var('POSTGRES_PASSWORD') }}"
-      dbname: "{{ env_var('POSTGRES_DB') }}"
-      schema: streamcore_staging
+      type: clickhouse
+      host: "{{ env_var('CLICKHOUSE_HOST') }}"
+      port: 8123
+      user: "{{ env_var('CLICKHOUSE_USER') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD') }}"
+      # Base/default schema (= ClickHouse database) for any model that
+      # doesn't set its own +schema. Every model here does (see
+      # dbt_project.yml), so this value itself is never actually used —
+      # it only exists because dbt requires the field.
+      schema: streamcore
+      secure: false
       threads: 4

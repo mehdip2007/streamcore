@@ -1,0 +1,19 @@
+# Example ~/.dbt/profiles.yml for running dbt from your host machine
+# (as opposed to airflow/profiles/profiles.yml, which is the equivalent
+# used inside the Airflow container). Copy this to ~/.dbt/profiles.yml
+# and adjust if you've changed CLICKHOUSE_USER/CLICKHOUSE_PASSWORD in .env.
+#
+# docker-compose.yml maps ClickHouse's HTTP interface to localhost:8123,
+# which is what dbt-clickhouse talks to.
+streamcore_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      host: localhost
+      port: 8123
+      user: streamcore
+      password: change_me_locally
+      schema: streamcore
+      secure: false
+      threads: 4

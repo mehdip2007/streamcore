@@ -11,6 +11,9 @@ It answers:
   - Is buffering affecting completion rates?
 
 Audience: Engineering, infrastructure, QA teams
+
+Dialect note: Postgres's `count(*) filter (where ...)` becomes
+ClickHouse's `countIf(...)` throughout (see int_watch_sessions.sql).
 */
 
 with sessions as (
@@ -34,23 +37,13 @@ device_metrics as (
         max(buffering_rate_pct)                 as max_buffering_rate_pct,
 
         -- Sessions with any buffering
-        count(*) filter (
-            where buffering_rate_pct > 0
-        )                                       as sessions_with_buffering,
+        countIf(buffering_rate_pct > 0)         as sessions_with_buffering,
 
         -- Quality distribution
-        count(*) filter (
-            where dominant_quality = '4k'
-        )                                       as sessions_4k,
-        count(*) filter (
-            where dominant_quality = '1080p'
-        )                                       as sessions_1080p,
-        count(*) filter (
-            where dominant_quality = '720p'
-        )                                       as sessions_720p,
-        count(*) filter (
-            where dominant_quality in ('480p', '240p')
-        )                                       as sessions_low_quality,
+        countIf(dominant_quality = '4k')                       as sessions_4k,
+        countIf(dominant_quality = '1080p')                    as sessions_1080p,
+        countIf(dominant_quality = '720p')                     as sessions_720p,
+        countIf(dominant_quality in ('480p', '240p'))          as sessions_low_quality,
 
         -- Engagement by device
         round(avg(completion_pct), 2)           as avg_completion_pct,

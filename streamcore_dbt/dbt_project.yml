@@ -14,6 +14,14 @@ macro-paths: ["macros"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+# The warehouse is ClickHouse (see macros/postgres_bridge.sql for why).
+# Before every run, make sure the streamcore_raw.events bridge table
+# exists — dbt's source() calls read through it. Both must be idempotent
+# (IF NOT EXISTS) since they run on every single dbt invocation.
+on-run-start:
+  - "{{ create_raw_events_database() }}"
+  - "{{ create_raw_events_bridge_table() }}"
+
 # ============================================================
 # Model Configuration
 # ============================================================

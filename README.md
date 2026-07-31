@@ -23,26 +23,28 @@ An end-to-end open source data engineering project demonstrating production-grad
                  ┌───────────────┐              ┌────────────────┐
                  │ PySpark       │              │ Postgres       │  ← Layer 2: Storage
                  │ Streaming Job │              │ (raw events)   │
-                 └───────┬───────┘              └────────────────┘
-                         │
-                         ▼
-                 ┌────────────────┐
-                 │   BigQuery     │  ← Layer 4: Warehouse
-                 └───────┬────────┘
-                         │
-                         ▼
-                 ┌────────────────┐
-                 │      dbt       │  ← Layer 5: Modeling
-                 │ (staging/marts)│
-                 └────────────────┘
-                         │
-                         ▼
-                 ┌────────────────┐
-                 │  Dashboards    │
-                 │ + Data Quality │  ← Layer 6: Observability
-                 └────────────────┘
+                 └───────────────┘              └───────┬────────┘
+                                                         │ ClickHouse's PostgreSQL
+                                                         │ table engine (live query,
+                                                         │ not a copy)
+                                                         ▼
+                                                 ┌────────────────┐
+                                                 │  ClickHouse    │  ← Layer 4: Warehouse
+                                                 └───────┬────────┘
+                                                         │
+                                                         ▼
+                                                 ┌────────────────┐
+                                                 │      dbt       │  ← Layer 5: Modeling
+                                                 │ (staging/marts)│
+                                                 └───────┬────────┘
+                                                         │
+                                                         ▼
+                                                 ┌────────────────┐
+                                                 │  Dashboards    │
+                                                 │ + Data Quality │  ← Layer 6: Observability
+                                                 └────────────────┘
 
-         Orchestrated by Apache Airflow (Layer 3)
+         Orchestrated by Apache Airflow (Layer 3) — runs the dbt step hourly
 ```
 
 ## Tech Stack
@@ -52,8 +54,9 @@ An end-to-end open source data engineering project demonstrating production-grad
 | Event Ingestion | Apache Kafka |
 | Stream Processing | PySpark Structured Streaming |
 | Orchestration | Apache Airflow |
-| Storage | Postgres (local) → BigQuery (production) |
-| Modeling | dbt |
+| Operational storage | Postgres (raw events + streaming aggregates) |
+| Warehouse | ClickHouse (dbt's target — reads Postgres live via a table-engine bridge) |
+| Modeling | dbt (`dbt-clickhouse`) |
 | Observability | Custom data quality + Metabase |
 | Container | Docker Compose |
 | Language | Python 3.11+ |
@@ -109,6 +112,11 @@ pip install -e ".[dev]"
 
 # 6. Run the producer
 python -m scripts.run_producer
+
+# 7. (optional) Run dbt against ClickHouse once some data has flowed through
+pip install -e ".[dbt]"
+cp streamcore_dbt/profiles.example.yml ~/.dbt/profiles.yml
+cd streamcore_dbt && dbt build
 ```
 
 ## Build Roadmap
@@ -118,8 +126,10 @@ This project is built in **vertical slices** — each slice is end-to-end and sh
 - [x] **Slice 1** — Event schemas + simulator + local stack
 - [x] **Slice 2** — Kafka producer + Postgres consumer
 - [x] **Slice 3** — PySpark streaming job
-- [x] **Slice 4** — Airflow batch DAGs (dbt orchestration; still local Postgres, not BigQuery)
-- [ ] **Slice 5** — dbt models on BigQuery (staging/intermediate/marts exist, but target Postgres — BigQuery migration not started)
+- [x] **Slice 4** — Airflow batch DAGs (runs `dbt build` hourly)
+- [x] **Slice 5** — dbt models on ClickHouse (staging/intermediate/marts, verified end-to-end against real
+  pipeline data; see CLAUDE.md's dbt project section for how ClickHouse reads Postgres without a new
+  ingestion pipeline)
 - [ ] **Slice 6** — Data quality + observability (dashboards, freshness/anomaly checks beyond dbt's built-in column tests)
 
 ## Design Principles

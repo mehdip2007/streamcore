@@ -84,8 +84,10 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
   # ----- Postgres -----
-  # Used in Layer 1 as the consumer's destination.
-  # We'll move to BigQuery in Layer 5.
+  # System of record for Layer 1 — the consumer's raw-events destination
+  # and the Spark job's aggregate-tables destination. dbt (Layer 5) reads
+  # from Postgres too, but through ClickHouse's PostgreSQL table engine
+  # rather than querying Postgres directly — see the clickhouse service.
   postgres:
     image: postgres:16-alpine
     platform: linux/amd64
@@ -101,6 +103,36 @@ services:
       - ./infra/postgres:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-streamcore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----- ClickHouse -----
+  # Analytical warehouse for dbt (Slice 5). Nothing upstream changes:
+  # Kafka, the consumer, and the Spark job keep writing to Postgres
+  # exactly as before. dbt's on-run-start hooks (see dbt_project.yml)
+  # create a `streamcore_raw.events` table INSIDE ClickHouse that uses
+  # ClickHouse's PostgreSQL table engine to transparently proxy the real
+  # Postgres table — a live federated query, not a copy — so dbt can
+  # model against ClickHouse without any new ingestion pipeline.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    platform: linux/amd64
+    container_name: streamcore-clickhouse
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8123:8123"   # HTTP interface — used by dbt-clickhouse
+      - "9000:9000"   # Native protocol — used by `clickhouse-client`
+    environment:
+      CLICKHOUSE_DB: streamcore
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-streamcore}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change_me_locally}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -124,15 +156,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     ports:
       - "8081:8080"
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-streamcore}:${POSTGRES_PASSWORD:-change_me_locally}@postgres:5432/${POSTGRES_DB:-streamcore}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      # Consumed by airflow/profiles/profiles.yml, not by Airflow itself
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
+      # Consumed by airflow/profiles/profiles.yml (the dbt-clickhouse
+      # connection target) and by streamcore_dbt's on-run-start hooks
+      # (which embed POSTGRES_* into the bridge table's DDL) — not by
+      # Airflow itself.
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-streamcore}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change_me_locally}
       POSTGRES_DB: ${POSTGRES_DB:-streamcore}
       POSTGRES_USER: ${POSTGRES_USER:-streamcore}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
@@ -145,4 +183,5 @@ services:
 
 volumes:
   postgres-data:
+  clickhouse-data:
   airflow-logs:
