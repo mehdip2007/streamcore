@@ -16,7 +16,13 @@ dependencies = [
     "structlog>=24.4.0",           # Structured logging (production-grade)
     "psycopg[binary]>=3.2.0",      # Postgres driver (modern replacement for psycopg2)
     "faker>=28.0.0",               # Generate realistic fake data
-    "pyspark>=3.5.0",
+    # Pinned below 4.0: streaming/core/spark_session.py hardcodes the
+    # spark-sql-kafka connector as a Scala 2.12 / Spark 3.5.0 Maven
+    # coordinate. An unconstrained pyspark>=3.5.0 resolves to the latest
+    # 4.x, which crashes at stream-read time with a Scala ABI mismatch
+    # (NoSuchMethodError on scala.Predef$.wrapRefArray) since 4.x moved
+    # to Scala 2.13. Bump both together if you ever upgrade off 3.5.x.
+    "pyspark>=3.5.0,<4.0.0",
     "clickhouse-connect>=0.7.0",   # Data quality checks against the ClickHouse warehouse
 ]
 
