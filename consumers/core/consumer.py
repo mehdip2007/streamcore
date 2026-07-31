@@ -146,10 +146,16 @@ class StreamCoreConsumer:
                 kafka_meta=kafka_meta,
             )
 
-            # Commit AFTER successful write — at-least-once guarantee
-            # store_offsets stages the commit; the actual commit happens
-            # in the background or on the next poll()
+            # Commit AFTER successful write — at-least-once guarantee.
+            # store_offsets() only stages the offset locally; without an
+            # explicit commit() it is never sent to the broker, so a
+            # restarted consumer group has no durable checkpoint and
+            # falls back to auto.offset.reset (replaying the whole
+            # topic). asynchronous=False keeps this call on the hot
+            # path simple; move to a periodic async commit if commit
+            # latency ever becomes a bottleneck.
             self._consumer.store_offsets(msg)
+            self._consumer.commit(message=msg, asynchronous=False)
 
             log.debug(
                 "message_processed",
