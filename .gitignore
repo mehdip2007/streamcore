@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 venv/
+.venv/
 
 # Environment variables
 .env
@@ -15,6 +16,14 @@ dist/
 build/
 *.pyc
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# dbt
+streamcore_dbt/target/
+streamcore_dbt/dbt_packages/
+streamcore_dbt/logs/
 
 # Logs
 *.log
@@ -23,3 +32,14 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Stray git-internals dump (see CLAUDE.md housekeeping note) — guards
+# against ever re-committing a copy of .git's contents at repo root
+/HEAD
+/config
+/description
+/hooks/
+/info/
+/logs/
+/objects/
+/refs/
