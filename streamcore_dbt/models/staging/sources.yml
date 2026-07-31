@@ -22,6 +22,16 @@ sources:
     tables:
       - name: events
         description: "All raw events from the streaming pipeline — video views and watch progress"
+        # Freshness check (Slice 6): warns/errors if the producer+consumer
+        # have stopped writing new rows. loaded_at_field uses ingested_at
+        # (when WE received the event) rather than event_timestamp (when
+        # it happened), since a slow/stuck consumer is what we want to
+        # catch here, not simulated event-time drift.
+        # Run with: dbt source freshness
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 15, period: minute}
+          error_after: {count: 60, period: minute}
         columns:
           - name: event_id
             description: "Unique identifier for each event"

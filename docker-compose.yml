@@ -169,15 +169,23 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-streamcore}:${POSTGRES_PASSWORD:-change_me_locally}@postgres:5432/${POSTGRES_DB:-streamcore}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       # Consumed by airflow/profiles/profiles.yml (the dbt-clickhouse
-      # connection target) and by streamcore_dbt's on-run-start hooks
-      # (which embed POSTGRES_* into the bridge table's DDL) — not by
-      # Airflow itself.
+      # connection target), by streamcore_dbt's on-run-start hooks (which
+      # embed POSTGRES_* into the bridge table's DDL), and by
+      # quality/checks.py (the data_quality_checks task, via
+      # producers.core.config's Postgres/ClickHouse/DataQuality settings)
+      # — not by Airflow itself.
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-streamcore}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change_me_locally}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-streamcore}
       POSTGRES_USER: ${POSTGRES_USER:-streamcore}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      # Lets `python -m scripts.run_data_quality_checks` resolve
+      # producers.*/quality.*/scripts.* from the bind mounts below,
+      # without pip-installing the whole app into this image.
+      PYTHONPATH: /opt/airflow/streamcore
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/profiles:/opt/airflow/dbt_profiles:ro
@@ -185,6 +193,9 @@ services:
       # into this directory (both already gitignored). A :ro mount here
       # makes `dbt build` fail with "Read-only file system: .../logs/dbt.log".
       - ./streamcore_dbt:/opt/airflow/streamcore_dbt
+      - ./producers:/opt/airflow/streamcore/producers:ro
+      - ./quality:/opt/airflow/streamcore/quality:ro
+      - ./scripts:/opt/airflow/streamcore/scripts:ro
       - airflow-logs:/opt/airflow/logs
     command: standalone
 

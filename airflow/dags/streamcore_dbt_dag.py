@@ -1,5 +1,5 @@
 """
-Airflow DAG — batch dbt orchestration (Slice 4).
+Airflow DAG — batch dbt orchestration + data quality (Slices 4 and 6).
 
 Why this exists
 ----------------
@@ -20,6 +20,15 @@ in the Airflow UI — the production-grade answer. That's a second tool to
 learn on top of Airflow itself, though. This vertical slice starts with
 the simplest thing that works, shelling out to `dbt build`, and can grow
 into per-model tasks once the orchestration layer itself is understood.
+
+Why a separate data_quality_checks task instead of relying on dbt build alone?
+-------------------------------------------------------------------------------
+`dbt build` can report "Completed successfully" even when something is
+subtly wrong — e.g. an empty result set from a broken bridge table isn't
+a SQL error. quality/checks.py (scripts/run_data_quality_checks.py)
+checks things dbt's pass/fail signal can't: whether the ClickHouse marts
+are actually non-empty, and whether Postgres is still receiving fresh
+data at all (the root-cause signal if the producer/consumer die).
 """
 from __future__ import annotations
 
@@ -33,16 +42,21 @@ from airflow.operators.bash import BashOperator
 DBT_PROJECT_DIR = "/opt/airflow/streamcore_dbt"
 DBT_PROFILES_DIR = "/opt/airflow/dbt_profiles"
 
+# Where docker-compose.yml bind-mounts producers/, quality/, and scripts/
+# (PYTHONPATH is also set to this in the airflow service's environment).
+APP_DIR = "/opt/airflow/streamcore"
+
 with DAG(
     dag_id="streamcore_dbt_batch",
     description=(
         "Rebuild staging/intermediate/mart models from "
-        "streamcore_raw.events and streamcore_aggregated.*"
+        "streamcore_raw.events and streamcore_aggregated.*, then run "
+        "data quality checks against the result"
     ),
     schedule="@hourly",
     start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
     catchup=False,
-    tags=["streamcore", "dbt", "slice-4"],
+    tags=["streamcore", "dbt", "slice-4", "slice-6"],
 ) as dag:
     # `dbt build` = `dbt run` + `dbt test` in dependency order, so a
     # broken model or a failed data test both fail this task instead
@@ -54,3 +68,10 @@ with DAG(
             f"dbt build --profiles-dir {DBT_PROFILES_DIR}"
         ),
     )
+
+    data_quality_checks = BashOperator(
+        task_id="data_quality_checks",
+        bash_command=f"cd {APP_DIR} && python -m scripts.run_data_quality_checks",
+    )
+
+    dbt_build >> data_quality_checks

@@ -55,6 +55,38 @@ class PostgresSettings(BaseSettings):
         )
 
 
+class ClickHouseSettings(BaseSettings):
+    """All ClickHouse-related configuration — the dbt warehouse (see streamcore_dbt/)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="CLICKHOUSE_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    host: str = Field(default="localhost")
+    port: int = Field(default=8123, description="HTTP interface port, not the native protocol port")
+    db: str = Field(default="streamcore")
+    user: str = Field(default="streamcore")
+    password: str = Field(default="change_me_locally")
+
+
+class DataQualitySettings(BaseSettings):
+    """Tuning for scripts/run_data_quality_checks.py (Slice 6)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DATA_QUALITY_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    freshness_threshold_minutes: int = Field(
+        default=15,
+        ge=1,
+        description="Alert if the newest row in streamcore_raw.events is older than this",
+    )
+
+
 class ProducerSettings(BaseSettings):
     """Behavior tuning for the event producer."""
 
@@ -94,6 +126,16 @@ def get_kafka_settings() -> KafkaSettings:
 @lru_cache
 def get_postgres_settings() -> PostgresSettings:
     return PostgresSettings()
+
+
+@lru_cache
+def get_clickhouse_settings() -> ClickHouseSettings:
+    return ClickHouseSettings()
+
+
+@lru_cache
+def get_data_quality_settings() -> DataQualitySettings:
+    return DataQualitySettings()
 
 
 @lru_cache

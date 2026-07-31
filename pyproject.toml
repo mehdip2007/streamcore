@@ -17,6 +17,7 @@ dependencies = [
     "psycopg[binary]>=3.2.0",      # Postgres driver (modern replacement for psycopg2)
     "faker>=28.0.0",               # Generate realistic fake data
     "pyspark>=3.5.0",
+    "clickhouse-connect>=0.7.0",   # Data quality checks against the ClickHouse warehouse
 ]
 
 [project.optional-dependencies]
@@ -43,7 +44,7 @@ build-backend = "hatchling.build"
 # code is split across producers/, consumers/, streaming/, and scripts/.
 # Without this, `pip install -e ".[dev]"` fails at the metadata step.
 [tool.hatch.build.targets.wheel]
-packages = ["producers", "consumers", "streaming", "scripts"]
+packages = ["producers", "consumers", "streaming", "scripts", "quality"]
 
 [tool.ruff]
 line-length = 100
