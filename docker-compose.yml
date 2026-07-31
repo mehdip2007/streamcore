@@ -151,7 +151,11 @@ services:
   #   docker compose logs airflow | grep password
   airflow:
     build: ./airflow
-    platform: linux/amd64
+    # No platform pin, unlike the other services here — the official
+    # Airflow image publishes native linux/arm64 builds, and forcing
+    # linux/amd64 on Apple Silicon means every one of Airflow's several
+    # processes (webserver, scheduler, triggerer, gunicorn workers) runs
+    # under Rosetta emulation, which made first boot pathologically slow.
     container_name: streamcore-airflow
     depends_on:
       postgres:
@@ -177,7 +181,10 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/profiles:/opt/airflow/dbt_profiles:ro
-      - ./streamcore_dbt:/opt/airflow/streamcore_dbt:ro
+      # Not read-only: dbt writes its own logs/ and target/ output back
+      # into this directory (both already gitignored). A :ro mount here
+      # makes `dbt build` fail with "Read-only file system: .../logs/dbt.log".
+      - ./streamcore_dbt:/opt/airflow/streamcore_dbt
       - airflow-logs:/opt/airflow/logs
     command: standalone
 

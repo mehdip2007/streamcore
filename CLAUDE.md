@@ -146,7 +146,8 @@ why — that string is resolved by the ClickHouse *server*, not by whatever mach
 Runs as its own docker-compose service (`airflow`), built from `airflow/Dockerfile` (official Airflow
 image + `dbt-clickhouse`) rather than as a `pyproject.toml` dependency — Airflow's own dependency pinning
 is heavy and unrelated to the app's runtime. `airflow/dags/streamcore_dbt_dag.py` runs `dbt build`
-hourly via `BashOperator` against `streamcore_dbt/` (bind-mounted read-only into the container).
+hourly via `BashOperator` against `streamcore_dbt/` (bind-mounted read-write — dbt writes its own
+`logs/`/`target/` output back into it, both gitignored — a `:ro` mount here breaks `dbt build`).
 `airflow/profiles/profiles.yml` is a *separate* dbt profile used only inside that container — see the
 dbt project section above for why it differs from a developer's host-side profile. The `airflow`
 service runs in `standalone` mode (single container: webserver + scheduler + auto-created admin user)
