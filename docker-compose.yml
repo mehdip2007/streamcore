@@ -105,5 +105,44 @@ services:
       timeout: 5s
       retries: 5
 
+  # ----- Airflow -----
+  # Batch orchestration (Slice 4). Runs streamcore_dbt on a schedule —
+  # this is NOT part of the always-on producer/consumer/Spark pipeline;
+  # those keep running regardless of whether Airflow is up.
+  #
+  # `standalone` initializes the metadata DB, creates a default admin
+  # user, and runs the webserver + scheduler in a single process — the
+  # simplest way to run Airflow locally. Its metadata tables land in the
+  # same Postgres instance/database as the app data, but in the default
+  # `public` schema, so they don't collide with streamcore_raw/streamcore_aggregated.
+  # The generated admin password is printed on first boot — see:
+  #   docker compose logs airflow | grep password
+  airflow:
+    build: ./airflow
+    platform: linux/amd64
+    container_name: streamcore-airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-streamcore}:${POSTGRES_PASSWORD:-change_me_locally}@postgres:5432/${POSTGRES_DB:-streamcore}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Consumed by airflow/profiles/profiles.yml, not by Airflow itself
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-streamcore}
+      POSTGRES_USER: ${POSTGRES_USER:-streamcore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/profiles:/opt/airflow/dbt_profiles:ro
+      - ./streamcore_dbt:/opt/airflow/streamcore_dbt:ro
+      - airflow-logs:/opt/airflow/logs
+    command: standalone
+
 volumes:
   postgres-data:
+  airflow-logs:

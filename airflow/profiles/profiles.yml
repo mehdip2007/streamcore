@@ -1,0 +1,22 @@
+# dbt connection profile used ONLY inside the Airflow container.
+#
+# This is separate from the ~/.dbt/profiles.yml a developer keeps on
+# their host machine for manual `dbt run` — that one connects to
+# postgres via localhost:5432 (docker-compose's PLAINTEXT_HOST-style
+# port mapping), but this container talks to the `postgres` service by
+# its Docker network hostname instead.
+#
+# All values come from environment variables (see docker-compose.yml's
+# airflow service) so no credentials are hardcoded here.
+streamcore_dbt:
+  target: airflow
+  outputs:
+    airflow:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: "{{ env_var('POSTGRES_PORT') | int }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      pass: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      schema: streamcore_staging
+      threads: 4
