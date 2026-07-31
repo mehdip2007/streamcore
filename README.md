@@ -47,6 +47,11 @@ An end-to-end open source data engineering project demonstrating production-grad
          Orchestrated by Apache Airflow (Layer 3) — runs the dbt step hourly
 ```
 
+Simplified for readability: Metabase (dashboards) actually connects straight to Postgres, not through
+ClickHouse/dbt — it visualizes `streamcore_aggregated.*` directly, since that's what those tables are
+for. Data quality checks likewise touch both Postgres (freshness) and ClickHouse (mart completeness)
+independently. See CLAUDE.md's "Data quality" and "Metabase dashboards" sections for the real wiring.
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -57,7 +62,7 @@ An end-to-end open source data engineering project demonstrating production-grad
 | Operational storage | Postgres (raw events + streaming aggregates) |
 | Warehouse | ClickHouse (dbt's target — reads Postgres live via a table-engine bridge) |
 | Modeling | dbt (`dbt-clickhouse`) |
-| Observability | Custom data quality + Metabase |
+| Observability | Custom data quality (`quality/`) + Metabase (dashboards on Postgres) |
 | Container | Docker Compose |
 | Language | Python 3.11+ |
 
@@ -74,6 +79,7 @@ streamcore/
 ├── streaming/               # Layer 2 — PySpark Structured Streaming jobs
 ├── airflow/                 # Layer 3 — DAGs (batch dbt orchestration)
 ├── streamcore_dbt/          # Layer 4 — Models (staging/intermediate/marts)
+├── quality/                 # Layer 6 — Custom data quality checks
 ├── tests/                   # Test suite
 ├── scripts/                 # Operational scripts
 ├── docker-compose.yml       # Local stack
@@ -117,6 +123,10 @@ python -m scripts.run_producer
 pip install -e ".[dbt]"
 cp streamcore_dbt/profiles.example.yml ~/.dbt/profiles.yml
 cd streamcore_dbt && dbt build
+
+# 8. (optional) Data quality checks + dashboards
+python -m scripts.run_data_quality_checks
+open http://localhost:3000  # Metabase — add a Postgres connection (host: postgres) to get started
 ```
 
 ## Build Roadmap
@@ -130,7 +140,10 @@ This project is built in **vertical slices** — each slice is end-to-end and sh
 - [x] **Slice 5** — dbt models on ClickHouse (staging/intermediate/marts, verified end-to-end against real
   pipeline data; see CLAUDE.md's dbt project section for how ClickHouse reads Postgres without a new
   ingestion pipeline)
-- [ ] **Slice 6** — Data quality + observability (dashboards, freshness/anomaly checks beyond dbt's built-in column tests)
+- [x] **Slice 6** — Data quality + observability: dbt source freshness + 3 custom singular tests,
+  a standalone `quality/` freshness/volume check (also runs as a second Airflow task), and a Metabase
+  dashboard (3 cards) on real `streamcore_aggregated.*` data — all verified against a live pipeline run.
+  Follow-up, not done here: visualizing the ClickHouse marts needs an extra Metabase driver plugin.
 
 ## Design Principles
 

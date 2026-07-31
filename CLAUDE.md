@@ -16,12 +16,13 @@ a portfolio/learning artifact. Match that style when editing existing modules.
 # Environment config (values already match producers/core/config.py's defaults)
 cp .env.example .env
 
-# Local infra (Kafka, Zookeeper, Kafka UI, Postgres, ClickHouse, Airflow)
+# Local infra (Kafka, Zookeeper, Kafka UI, Postgres, ClickHouse, Airflow, Metabase)
 docker compose up -d
 docker compose down            # stop
 docker compose down -v         # stop and wipe volumes (destructive)
 open http://localhost:8080     # Kafka UI
 open http://localhost:8081     # Airflow UI (admin password: docker compose logs airflow | grep password)
+open http://localhost:3000      # Metabase (dashboards)
 # ClickHouse HTTP interface (used by dbt): localhost:8123 — no browser UI by default
 
 # Python env
@@ -32,6 +33,9 @@ pip install -e ".[dev]"
 python -m scripts.run_producer
 python -m scripts.run_consumer
 python -m scripts.run_streaming
+
+# Data quality checks (Slice 6) — also runs as a second Airflow task after dbt_build
+python -m scripts.run_data_quality_checks
 
 # Tests
 pytest -q                      # whole suite (testpaths = tests/, per pyproject.toml)
@@ -53,8 +57,8 @@ dbt build   # = dbt run + dbt test, in dependency order
 
 Data flow: **Producer (Python sim) → Kafka topics → Postgres raw table (`streamcore_raw.events`,
 JSONB) → PySpark Structured Streaming aggregations → Postgres aggregate tables
-(`streamcore_aggregated.*`) → ClickHouse (dbt's warehouse, staging → intermediate → marts, orchestrated
-hourly by Airflow) → future dashboards**.
+(`streamcore_aggregated.*`) → Metabase dashboards, and separately → ClickHouse (dbt's warehouse,
+staging → intermediate → marts, orchestrated hourly by Airflow, followed by data quality checks)**.
 
 The producer, consumer, and Spark job are always-on — three long-lived processes started manually,
 independent of Airflow, and they only ever talk to Postgres/Kafka. ClickHouse and dbt are a separate
@@ -95,6 +99,12 @@ its own watermark, and writes every micro-batch to Postgres via `foreachBatch` u
 built `INSERT ... ON CONFLICT DO UPDATE` upsert (see `make_postgres_writer`). Spark schemas here
 (`VIEW_EVENT_SCHEMA`, `PROGRESS_EVENT_SCHEMA`) must stay in sync with the Pydantic event schemas by
 hand — there is no shared schema registry.
+
+**pyspark is pinned `<4.0.0`** in `pyproject.toml`: `spark_session.py` hardcodes the `spark-sql-kafka`
+connector as a Scala 2.12 / Spark 3.5.0 Maven coordinate, and pyspark 4.x moved to Scala 2.13 — running
+the streaming job against an unpinned/4.x install crashes at stream-read time with `NoSuchMethodError`
+on `scala.Predef$.wrapRefArray`. Bump the connector coordinate in `spark_session.py` too if you ever
+upgrade off 3.5.x.
 
 ### Configuration (`producers/core/config.py`)
 Pydantic-settings classes, each `@lru_cache`d into a singleton: `KafkaSettings` (`KAFKA_*`),
@@ -153,3 +163,38 @@ dbt project section above for why it differs from a developer's host-side profil
 service runs in `standalone` mode (single container: webserver + scheduler + auto-created admin user)
 and shares the same Postgres instance as the app data for its own metadata — those tables land in the
 default `public` schema, not `streamcore_raw`/`streamcore_aggregated`, so they don't collide.
+
+The DAG has a second task, `data_quality_checks`, that runs after `dbt_build` (see below). That task
+needs `producers.*`/`quality.*`/`scripts.*` importable and their runtime deps (`psycopg`,
+`clickhouse-connect`, `pydantic[-settings]`, `structlog`) installed — `airflow/Dockerfile` installs
+just those specific packages (not the whole app via `pip install -e .`, which would also drag in
+`pyspark`/`confluent-kafka` for no reason), and docker-compose.yml bind-mounts `producers/`, `quality/`,
+and `scripts/` into the container with `PYTHONPATH=/opt/airflow/streamcore`.
+
+### Data quality (Slice 6)
+Three independent layers, each catching something the others can't:
+- **dbt source freshness** (`streamcore_dbt/models/staging/sources.yml`, `loaded_at_field: ingested_at`,
+  warn/error after 15/60 min) — run via `dbt source freshness`. Only checks staleness; requires the
+  ClickHouse bridge table to already exist (`source freshness` doesn't run `on-run-start` hooks by
+  default in this dbt version), so run `dbt build` at least once first.
+- **dbt singular tests** (`streamcore_dbt/tests/*.sql`) — `completion_pct`/`buffering_rate_pct` must
+  stay in `[0, 100]`, `watch_duration_seconds` must never be negative. These run as part of `dbt build`
+  alongside the schema tests already on each model/source.
+- **`quality/checks.py`** (entry point: `scripts/run_data_quality_checks.py`) — the only one of the
+  three that runs independently of dbt. `check_raw_events_freshness()` queries Postgres directly (the
+  root-cause signal: if the producer/consumer die, everything downstream is stale too, before dbt even
+  gets involved). `check_mart_tables_not_empty()` queries ClickHouse directly, because `dbt build` can
+  report "Completed successfully" even when a mart ends up empty — an empty result set isn't a SQL
+  error, so this is specifically for catching a silently-broken bridge table. Runs as the second Airflow
+  task (`data_quality_checks`), after `dbt_build`, and exits non-zero on any failure either way.
+
+### Metabase dashboards (Slice 6)
+The `metabase` docker-compose service connects to **Postgres**, not ClickHouse — Metabase ships a
+native Postgres driver, but ClickHouse needs an extra driver plugin it doesn't bundle by default, so
+visualizing `streamcore_aggregated.*` (the Spark job's real-time tables, exactly what they're built
+for) was the zero-extra-setup option. Uses Metabase's embedded H2 app-db (`MB_DB_FILE`) rather than a
+second Postgres instance — simplest choice for local dev, persisted via the `metabase-data` volume so
+dashboards survive a container recreate. Visualizing the ClickHouse marts would need the
+`metabase-clickhouse-driver` plugin JAR dropped into a mounted plugins directory — not done here, since
+it requires downloading a binary from GitHub releases rather than anything scriptable through Docker
+Compose alone.
