@@ -13,11 +13,15 @@ a portfolio/learning artifact. Match that style when editing existing modules.
 ## Commands
 
 ```bash
-# Local infra (Kafka, Zookeeper, Kafka UI, Postgres)
+# Environment config (values already match producers/core/config.py's defaults)
+cp .env.example .env
+
+# Local infra (Kafka, Zookeeper, Kafka UI, Postgres, Airflow)
 docker compose up -d
 docker compose down            # stop
 docker compose down -v         # stop and wipe volumes (destructive)
 open http://localhost:8080     # Kafka UI
+open http://localhost:8081     # Airflow UI (admin password: docker compose logs airflow | grep password)
 
 # Python env
 python -m venv .venv && source .venv/bin/activate
@@ -47,10 +51,12 @@ dbt test
 
 Data flow: **Producer (Python sim) → Kafka topics → Postgres raw table (`streamcore_raw.events`,
 JSONB) → PySpark Structured Streaming aggregations → Postgres aggregate tables
-(`streamcore_aggregated.*`) → dbt (staging → intermediate → marts) → future dashboards**.
+(`streamcore_aggregated.*`) → dbt (staging → intermediate → marts, orchestrated hourly by Airflow) →
+future dashboards**.
 
-Airflow (`airflow/dags/`) is a placeholder for future batch orchestration; the pipeline currently runs
-as three long-lived processes started manually.
+The producer, consumer, and Spark job are always-on — three long-lived processes started manually,
+independent of Airflow. Airflow (`airflow/dags/`) only orchestrates the batch step (dbt); it is not
+part of the streaming path and the pipeline keeps running whether or not Airflow is up.
 
 ### Event contracts (`producers/events/schemas.py`)
 All events subclass `BaseEvent` (Pydantic, `frozen=True` — immutable once constructed) and carry
@@ -107,3 +113,15 @@ that directory. Layering, each with its own default materialization set in `dbt_
 - `models/marts/` (tables, schema `streamcore_marts`) — `mart_content_performance` (views/completion
   by video, for content/product) and `mart_device_quality` (buffering health by device/country, for
   engineering).
+
+### Airflow batch orchestration (`airflow/`)
+Runs as its own docker-compose service (`airflow`), built from `airflow/Dockerfile` (official Airflow
+image + `dbt-postgres`) rather than as a `pyproject.toml` dependency — Airflow's own dependency pinning
+is heavy and unrelated to the app's runtime. `airflow/dags/streamcore_dbt_dag.py` runs `dbt build`
+hourly via `BashOperator` against `streamcore_dbt/` (bind-mounted read-only into the container).
+`airflow/profiles/profiles.yml` is a *separate* dbt profile used only inside that container — it
+connects to the `postgres` service by Docker network hostname, unlike a developer's host-side
+`~/.dbt/profiles.yml`, which uses `localhost`. The `airflow` service runs in `standalone` mode (single
+container: webserver + scheduler + auto-created admin user) and shares the same Postgres instance as
+the app data — Airflow's metadata tables land in the default `public` schema, not
+`streamcore_raw`/`streamcore_aggregated`, so they don't collide.

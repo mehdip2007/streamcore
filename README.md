@@ -67,9 +67,10 @@ streamcore/
 ├── producers/               # Layer 1 — Event generation
 │   ├── core/                # Config, logging, shared utilities
 │   └── events/              # Event schemas, simulator
-├── streaming/               # Layer 2 — PySpark jobs (later)
-├── airflow/                 # Layer 3 — DAGs (later)
-├── dbt/                     # Layer 4 — Models (later)
+├── consumers/               # Layer 1 — Kafka consumer + Postgres sink
+├── streaming/               # Layer 2 — PySpark Structured Streaming jobs
+├── airflow/                 # Layer 3 — DAGs (batch dbt orchestration)
+├── streamcore_dbt/          # Layer 4 — Models (staging/intermediate/marts)
 ├── tests/                   # Test suite
 ├── scripts/                 # Operational scripts
 ├── docker-compose.yml       # Local stack
@@ -115,11 +116,11 @@ python -m scripts.run_producer
 This project is built in **vertical slices** — each slice is end-to-end and shippable.
 
 - [x] **Slice 1** — Event schemas + simulator + local stack
-- [ ] **Slice 2** — Kafka producer + Postgres consumer
-- [ ] **Slice 3** — PySpark streaming job
-- [ ] **Slice 4** — Airflow batch DAGs
-- [ ] **Slice 5** — dbt models on BigQuery
-- [ ] **Slice 6** — Data quality + observability
+- [x] **Slice 2** — Kafka producer + Postgres consumer
+- [x] **Slice 3** — PySpark streaming job
+- [x] **Slice 4** — Airflow batch DAGs (dbt orchestration; still local Postgres, not BigQuery)
+- [ ] **Slice 5** — dbt models on BigQuery (staging/intermediate/marts exist, but target Postgres — BigQuery migration not started)
+- [ ] **Slice 6** — Data quality + observability (dashboards, freshness/anomaly checks beyond dbt's built-in column tests)
 
 ## Design Principles
 
