@@ -1,21 +1,33 @@
 # StreamCore Project Documentation
 
-> Confluence-style documentation generated from a project scan.
+> Detailed, code-level documentation of what StreamCore actually does today, file by file.
+> Companion to `README.md` (quick start, roadmap) and `CLAUDE.md` (guidance for AI coding
+> assistants working in this repo) — this document goes deeper into *why* things are built the
+> way they are.
+
+---
 
 ## 1. Executive Summary
 
-`StreamCore` is a local-first data engineering project that simulates the data platform behind a video streaming product.
+`StreamCore` is a local-first data engineering project that simulates the data platform behind
+a video streaming product (a miniature Netflix/YouTube analytics stack), built in **vertical
+slices** rather than horizontal layers — every slice is end-to-end and independently runnable.
 
-At a high level, it does this:
+What it does, end to end:
 
-1. Generates realistic video-watching events in Python.
-2. Sends those events into Apache Kafka.
-3. Consumes Kafka events and stores raw event payloads in Postgres.
-4. Runs PySpark Structured Streaming jobs that calculate real-time analytics.
-5. Stores streaming aggregates back into Postgres.
-6. Includes a starter dbt project for future transformation/modeling work.
+1. A Python simulator generates realistic video-watching events (`producers/`).
+2. Events are published to Kafka topics.
+3. A Kafka consumer writes every raw event into Postgres as JSONB (`streamcore_raw.events`).
+4. A PySpark Structured Streaming job independently reads the same Kafka topics and maintains
+   three real-time aggregate tables in Postgres (`streamcore_aggregated.*`).
+5. ClickHouse reads `streamcore_raw.events` live out of Postgres (via a federated table engine,
+   not a copy) and dbt builds a staging → intermediate → marts model on top of it.
+6. Airflow runs `dbt build` hourly, followed by a custom data-quality check.
+7. Metabase visualizes the real-time Postgres aggregates; dbt's own tests plus a standalone
+   `quality/` package catch pipeline problems dbt's pass/fail signal alone would miss.
 
-Think of it as a miniature Netflix/YouTube analytics pipeline built for learning and portfolio demonstration.
+All six slices on the original roadmap are implemented and have been verified against a live,
+running stack — not just written.
 
 ---
 
@@ -26,16 +38,17 @@ A video streaming platform needs to answer questions like:
 - How many people are watching each video right now?
 - Which devices are buffering the most?
 - Which videos are trending in the last 5 minutes?
-- What raw user behavior happened so analysts can model it later?
+- Which videos do people actually finish watching?
+- Is the pipeline itself healthy — is data still flowing, are the marts actually populated?
 
-`StreamCore` models the data backbone for this.
+`StreamCore` models the data backbone for this. It does not serve video — it focuses entirely
+on the data events a streaming platform produces and the layers of processing built on top of
+them.
 
-The system does not serve videos. Instead, it focuses on the data events produced by a streaming platform.
+Event types:
 
-Example event types:
-
-- `video_view`: user starts watching a video.
-- `watch_progress`: user is still watching and sends periodic progress updates.
+- `video_view` — a user starts watching a video (`VideoViewEvent`).
+- `watch_progress` — a periodic (~10s) playback tick while watching (`WatchProgressEvent`).
 
 ---
 
@@ -43,42 +56,97 @@ Example event types:
 
 ### 3.1 Data Flow
 
-Producer simulator → Kafka topics → Postgres raw table → PySpark streaming aggregations → Postgres aggregate tables → future dbt/dashboard layer
+```
+Producer (Python sim)
+        │
+        ▼
+   Kafka topics
+        │
+        ├──────────────────────────────┐
+        ▼                              ▼
+Postgres raw table              PySpark Structured Streaming
+(streamcore_raw.events,         (concurrent viewers / buffering
+ JSONB, via the consumer)        rate / top videos)
+        │                              │
+        │                              ▼
+        │                     Postgres aggregate tables
+        │                     (streamcore_aggregated.*)
+        │                              │
+        │                              ▼
+        │                          Metabase dashboards
+        │
+        ▼  (ClickHouse's PostgreSQL table engine — live query, not a copy)
+    ClickHouse
+        │
+        ▼
+       dbt (staging → intermediate → marts)
+        │
+        ▼
+Airflow (hourly): dbt build, then data-quality checks
+```
+
+The producer, consumer, and Spark job are **always-on** — three long-lived processes, started
+manually, independent of Airflow, and they only ever talk to Kafka/Postgres. ClickHouse/dbt/
+Airflow are a batch analytical layer bolted on afterward; nothing about the streaming path
+changed to support them.
 
 ### 3.2 Components
 
-| Layer | Component | Purpose | Current Status |
+| Layer | Component | Purpose | Status |
 |---|---|---|---|
-| Event generation | Python simulator | Creates realistic user/video/session events | Implemented |
-| Ingestion | Kafka | Buffers and distributes events | Implemented through Docker Compose |
-| Raw storage | Postgres | Stores original Kafka payloads as JSONB | Implemented |
-| Stream processing | PySpark Structured Streaming | Computes live metrics | Implemented |
-| Modeling | dbt | Future warehouse-style transformations | Starter project only |
-| Orchestration | Airflow | Future scheduled jobs | Directory exists, not implemented |
-| Observability | Logs, tests, Kafka UI | Local visibility into system behavior | Partially implemented |
+| Event generation | Python simulator (`producers/events/`) | Realistic user/video/session event streams | Done |
+| Ingestion | Kafka | Buffers and distributes events | Done |
+| Raw storage | Postgres (`streamcore_raw.events`) | Append-only JSONB landing zone | Done |
+| Stream processing | PySpark Structured Streaming | Real-time windowed aggregations | Done |
+| Real-time storage | Postgres (`streamcore_aggregated.*`) | Upserted per micro-batch | Done |
+| Warehouse | ClickHouse | Reads Postgres live via table-engine bridge | Done |
+| Modeling | dbt (`dbt-clickhouse`) | staging → intermediate → marts | Done |
+| Orchestration | Airflow | Hourly `dbt build` + data-quality task | Done |
+| Dashboards | Metabase | Visualizes `streamcore_aggregated.*` | Done |
+| Data quality | dbt tests + `quality/` package | Freshness, range, and volume checks | Done |
 
 ---
 
 ## 4. Repository Structure
 
-| Path | Meaning |
-|---|---|
-| `README.md` | Human-facing overview, architecture, quick start, and roadmap |
-| `pyproject.toml` | Python package metadata, dependencies, pytest config, linting config |
-| `docker-compose.yml` | Local infrastructure: Zookeeper, Kafka, Kafka UI, Postgres |
-| `.env` | Environment configuration file; values were intentionally not copied into this documentation |
-| `producers/` | Python event simulator and Kafka producer client |
-| `consumers/` | Kafka consumer and Postgres sink implementation |
-| `streaming/` | PySpark Structured Streaming session factory and aggregation job |
-| `infra/postgres/` | SQL initialization scripts for raw and aggregate schemas |
-| `scripts/` | CLI entry points for producer, consumer, and streaming job |
-| `tests/` | Unit tests for schemas and simulator behavior |
-| `streamcore_dbt/` | Starter dbt project |
-| `airflow/dags/` | Placeholder for future Airflow DAGs |
-| `docs/` | Project documentation, including this file |
-| `dbt/` | Empty placeholder; actual dbt project currently lives in `streamcore_dbt/` |
-| `logs/` and `streamcore_dbt/logs/` | dbt execution/debug logs |
-| `HEAD`, `config`, `hooks/`, `objects/`, `refs/`, `info/` | Git repository metadata present at project root; not application code |
+```
+streamcore/
+├── producers/                 # Event schemas, simulator, Kafka producer client, config
+│   ├── core/                  # config.py, kafka_client.py, logging_setup.py, topic_registry.py
+│   └── events/                # schemas.py (Pydantic event contracts), simulator.py
+├── consumers/                 # Kafka consumer + Postgres sink
+│   ├── core/consumer.py
+│   └── sinks/postgres_sink.py
+├── streaming/                 # PySpark Structured Streaming job
+│   ├── core/spark_session.py
+│   └── jobs/watch_aggregator.py
+├── quality/                   # Slice 6 — standalone data-quality checks
+│   └── checks.py
+├── infra/postgres/            # SQL run automatically on first Postgres volume init
+│   ├── 01_init_schema.sql     # streamcore_raw.events
+│   └── 02_streaming_schema.sql # streamcore_aggregated.*
+├── streamcore_dbt/            # Separate dbt project — targets ClickHouse
+│   ├── models/staging/        # stg_video_views, stg_watch_progress (views)
+│   ├── models/intermediate/   # int_watch_sessions (table)
+│   ├── models/marts/          # mart_content_performance, mart_device_quality (tables)
+│   ├── macros/                # postgres_bridge.sql, generate_schema_name.sql
+│   ├── tests/                 # 3 singular data tests
+│   └── profiles.example.yml   # host-side dbt connection profile
+├── airflow/                   # Batch orchestration (Slice 4 + Slice 6's second task)
+│   ├── Dockerfile             # Airflow image + dbt-clickhouse + quality-check deps
+│   ├── dags/streamcore_dbt_dag.py
+│   └── profiles/profiles.yml  # container-side dbt connection profile
+├── scripts/                   # CLI entry points (run_producer/consumer/streaming, run_data_quality_checks)
+├── tests/                     # pytest suite — schemas, simulator, Kafka client, consumer, sink, quality checks
+├── docs/                      # This file
+├── docker-compose.yml         # Full local stack
+├── pyproject.toml             # Python dependencies, pytest/ruff/mypy config
+└── .env.example               # Config template (matches producers/core/config.py's defaults)
+```
+
+There is no root-level `dbt_project.yml` — dbt commands only work from inside `streamcore_dbt/`.
+There are no legacy `core/`/`sinks/` duplicate packages at the repo root — everything imports
+from `producers.*` / `consumers.*`.
 
 ---
 
@@ -88,562 +156,479 @@ Producer simulator → Kafka topics → Postgres raw table → PySpark streaming
 
 Entry point: `scripts/run_producer.py`
 
-Flow:
+1. Configure structured logging (`producers/core/logging_setup.py`, `structlog`).
+2. Load `KafkaSettings` / `ProducerSettings` from `.env` via `pydantic-settings`.
+3. Build a `KafkaProducerClient` (`producers/core/kafka_client.py`) — wraps `confluent-kafka`
+   with `acks=all`, 5 retries, `linger.ms=10`, `snappy` compression.
+4. Build a `TopicRegistry` (`producers/core/topic_registry.py`) — the single source of truth
+   mapping event classes to Kafka topic names.
+5. Pull events from `EventGenerator.stream()` (`producers/events/simulator.py`) — an infinite
+   generator of realistic user sessions.
+6. For each event: look up its topic, serialize (`event.model_dump(mode="json")`), send keyed
+   by `user_id` (so a user's events land in the same partition and stay ordered).
+7. On shutdown: `client.close()` flushes any buffered, undelivered messages.
 
-1. Configure structured logging.
-2. Load producer settings from `.env` through Pydantic settings.
-3. Create a Kafka producer client.
-4. Create a topic registry.
-5. Create an infinite event generator.
-6. For each event:
-   - Determine the correct Kafka topic.
-   - Serialize the Pydantic event model to JSON.
-   - Send the event to Kafka using `user_id` as the message key.
-   - Sleep based on configured events-per-second.
-7. On shutdown, flush the Kafka producer so buffered events are not lost.
-
-Important files:
-
-| File | Responsibility |
-|---|---|
-| `scripts/run_producer.py` | Starts the event producer loop |
-| `producers/events/simulator.py` | Generates fake users, videos, sessions, and event streams |
-| `producers/events/schemas.py` | Defines event contracts using Pydantic |
-| `producers/core/kafka_client.py` | Wraps `confluent-kafka` producer |
-| `producers/core/topic_registry.py` | Maps event classes to Kafka topics |
-| `producers/core/config.py` | Loads app, Kafka, Postgres, and producer configuration |
-| `producers/core/logging_setup.py` | Configures structured logs through `structlog` |
+**Simulator realism** (`producers/events/simulator.py`): device type affects initial video
+quality (mobile gets lower quality, smart TV/desktop gets 1080p/4K); watch duration follows a
+right-skewed Beta(5, 2) distribution (mean ~71% completion) to model drop-off; mobile devices
+buffer more often (10% per tick vs 3% for other devices); video durations follow a weighted
+long-tail distribution (60s–3600s). `Faker` and `random` are seeded (`42`) for reproducible runs.
 
 ### 5.2 Consumer Flow
 
 Entry point: `scripts/run_consumer.py`
 
-Flow:
+1. Configure logging, connect to Postgres (`consumers/sinks/postgres_sink.py`).
+2. Subscribe to every topic in `TopicRegistry.all_topics`.
+3. Poll Kafka in a loop (`consumers/core/consumer.py`, `StreamCoreConsumer`).
+4. For each message: decode JSON, hand it to the sink (`PostgresSink.write`), then commit the
+   offset.
+5. On shutdown: flush pending rows, close the Kafka consumer.
 
-1. Configure structured logging.
-2. Connect to Postgres.
-3. Read all registered Kafka topic names from `TopicRegistry`.
-4. Subscribe to those topics.
-5. Poll Kafka in a loop.
-6. For each message:
-   - Decode JSON payload.
-   - Extract event metadata.
-   - Write event to Postgres raw table.
-   - Store/commit offset intent.
-7. On shutdown, flush pending Postgres rows and close the Kafka consumer.
+**Offset handling** — manual, not auto-commit:
+```python
+"enable.auto.commit": False,
+"enable.auto.offset.store": False,
+```
+`_process_message` writes to Postgres *first*, then calls `store_offsets(msg)` **and**
+`commit(message=msg, asynchronous=False)`. `store_offsets` alone only stages the offset locally
+— without the explicit synchronous `commit()`, nothing is ever sent to the broker, so a
+restarted consumer group would have no durable checkpoint and would replay the entire topic from
+`auto.offset.reset=earliest`. This exact bug existed earlier in the project and was fixed; a
+regression test for it lives in `tests/test_consumer.py`.
 
-Important files:
-
-| File | Responsibility |
-|---|---|
-| `scripts/run_consumer.py` | Starts the consumer process |
-| `consumers/core/consumer.py` | Reads Kafka messages and routes them to a sink |
-| `consumers/sinks/postgres_sink.py` | Batches raw events and inserts them into Postgres |
-| `infra/postgres/01_init_schema.sql` | Creates `streamcore_raw.events` |
+**Sink** (`consumers/sinks/postgres_sink.py`, strategy pattern — `StreamCoreConsumer` doesn't
+know or care what the sink is): batches up to `BATCH_SIZE=100` events, then
+`executemany`s a single `INSERT ... ON CONFLICT (event_id) DO NOTHING` per batch. Payloads are
+stored as `::jsonb` — schema evolution (new event fields) doesn't require a migration.
 
 ### 5.3 Streaming Aggregation Flow
 
 Entry point: `scripts/run_streaming.py`
 
-Flow:
+1. `streaming/core/spark_session.py` builds a singleton `SparkSession` (`local[*]`, all cores),
+   auto-downloading the Kafka connector via `spark.jars.packages`.
+2. `streaming/jobs/watch_aggregator.py` (`WatchAggregatorJob`) starts three independent
+   Structured Streaming queries, each reading Kafka directly (not through the consumer/Postgres
+   raw table):
 
-1. Configure structured logging.
-2. Create a singleton SparkSession.
-3. Read Kafka streams using Spark Structured Streaming.
-4. Parse Kafka JSON payloads into typed Spark DataFrames.
-5. Compute three aggregations:
-   - Concurrent viewers per video.
-   - Buffering rate by device type.
-   - Top videos by view count.
-6. Write each micro-batch into Postgres using `foreachBatch` and upsert logic.
+| Aggregation | Source topic | Window | Watermark | Key | Metric |
+|---|---|---|---|---|---|
+| `concurrent_viewers` | watch_progress | 30s tumbling | 1 min | `video_id` | `approx_count_distinct(session_id)` |
+| `buffering_rate` | watch_progress | 1 min tumbling | 2 min | `device_type` | `buffering_events / total_events * 100` |
+| `top_videos` | video_view | 5 min tumbling | 2 min | `video_id`, `video_title` | `count(*)` |
 
-Important files:
+3. Every micro-batch is written via `foreachBatch` (`make_postgres_writer`) — a dynamically
+   built `INSERT ... ON CONFLICT (<keys>) DO UPDATE SET ..., written_at = NOW()` upsert, because
+   late-arriving events can change an already-emitted window's numbers and duplicate rows aren't
+   wanted.
+4. `outputMode("update")`, `trigger(processingTime="10 seconds")` on all three queries;
+   `spark.streams.awaitAnyTermination()` blocks until one query stops or errors.
 
-| File | Responsibility |
-|---|---|
-| `scripts/run_streaming.py` | Starts the PySpark streaming job |
-| `streaming/core/spark_session.py` | Creates/caches SparkSession with Kafka connector |
-| `streaming/jobs/watch_aggregator.py` | Defines Kafka readers, JSON parsers, aggregations, and Postgres writers |
-| `infra/postgres/02_streaming_schema.sql` | Creates aggregate tables |
+**Known dependency constraint — pyspark must stay below 4.0.0.** `spark_session.py` hardcodes
+the Kafka connector as `org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0` — a Scala 2.12 / Spark
+3.5.0 Maven coordinate. pyspark 4.x moved to Scala 2.13; running the streaming job against an
+unpinned/4.x pyspark install crashes at stream-read time with
+`NoSuchMethodError: scala.Predef$.wrapRefArray`. This was an actual, previously-undiscovered bug
+in this project (`pyproject.toml` originally had an unbounded `pyspark>=3.5.0`, which resolved to
+4.2.0) — found by actually running the job end-to-end, not by inspection. Fixed by pinning
+`pyspark>=3.5.0,<4.0.0`. If you ever upgrade off Spark 3.5.x, bump the connector coordinate in
+`spark_session.py` at the same time.
 
 ---
 
-## 6. Data Contracts
+## 6. Data Contracts (`producers/events/schemas.py`)
 
-### 6.1 Base Event
+All events subclass `BaseEvent` — a `frozen=True` (immutable) Pydantic model. This is the
+contract between the producer and every downstream consumer: the Postgres sink, the Spark
+job's manually-maintained schemas, and dbt's staging models. **Nothing shares a single schema
+source across these** — changing a field means updating the Pydantic model, `VIEW_EVENT_SCHEMA`/
+`PROGRESS_EVENT_SCHEMA` in `watch_aggregator.py`, and the relevant `stg_*.sql` model, by hand.
 
-All events inherit from `BaseEvent` in `producers/events/schemas.py`.
+### 6.1 `BaseEvent` (common fields)
 
-Common fields:
-
-| Field | Meaning |
-|---|---|
-| `event_id` | Unique event identifier |
-| `event_type` | Event discriminator, such as `video_view` or `watch_progress` |
-| `event_timestamp` | UTC event time |
-| `user_id` | User who generated the event |
-| `session_id` | Watching session identifier |
-| `device_type` | Device category |
-| `ip_address` | Simulated IP address |
-| `country_code` | Two-character country code |
-
-The Pydantic model is frozen, which means events are immutable after creation.
+| Field | Type | Notes |
+|---|---|---|
+| `event_id` | `str` | Unique event identifier |
+| `event_type` | `str` | Discriminator: `video_view` / `watch_progress` |
+| `event_timestamp` | `datetime` | UTC, defaults to now |
+| `user_id` | `str` | |
+| `session_id` | `str` | |
+| `device_type` | `DeviceType` (enum) | `mobile_ios`, `mobile_android`, `web_desktop`, `web_mobile`, `smart_tv`, `tablet` |
+| `ip_address` | `str` | Simulated |
+| `country_code` | `str` | Exactly 2 chars (ISO 3166-1 alpha-2) |
 
 ### 6.2 `VideoViewEvent`
 
-Represents the moment a user starts watching a video.
-
-Additional fields:
-
-| Field | Meaning |
-|---|---|
-| `video_id` | Video identifier |
-| `video_title` | Simulated video title |
-| `video_duration_seconds` | Total video length |
-| `initial_quality` | Starting playback quality |
-| `referrer` | Source such as homepage, search, recommendation, or null |
-
-Kafka topic by default: `streamcore.video.views`
+Fired once, when playback starts. Adds: `video_id`, `video_title`, `video_duration_seconds`
+(`ge=0`), `initial_quality` (`VideoQuality` enum: `240p`/`480p`/`720p`/`1080p`/`4k`), `referrer`
+(nullable — `homepage`/`search`/`recommendation`/`None`).
+Kafka topic default: `streamcore.video.views`.
 
 ### 6.3 `WatchProgressEvent`
 
-Represents ongoing playback progress while the user watches.
-
-Additional fields:
-
-| Field | Meaning |
-|---|---|
-| `video_id` | Video identifier |
-| `position_seconds` | Current playback position |
-| `quality` | Current playback quality |
-| `is_buffering` | Whether playback is buffering |
-| `playback_rate` | Playback speed |
-
-Kafka topic by default: `streamcore.video.watch_progress`
+Fired ~every 10s during playback — the high-volume event type. Adds: `video_id`,
+`position_seconds` (`ge=0`), `quality`, `is_buffering` (`bool`), `playback_rate`
+(`0.25`–`2.0`, default `1.0`).
+Kafka topic default: `streamcore.video.watch_progress`.
 
 ---
 
 ## 7. Database Design
 
-### 7.1 Raw Layer
+### 7.1 Raw Layer — Postgres (`infra/postgres/01_init_schema.sql`)
 
-Defined in `infra/postgres/01_init_schema.sql`.
+`streamcore_raw.events` — append-only bronze layer. Columns: `id` (surrogate PK), `event_id`
+(unique), `event_type`, `event_timestamp`, `payload JSONB`, `ingested_at` (defaults `NOW()`),
+plus `kafka_topic`/`kafka_partition`/`kafka_offset`. Indexes: `(event_type, event_timestamp DESC)`,
+`(ingested_at DESC)`, and a GIN index on `payload` for querying inside the JSON.
 
-Schema: `streamcore_raw`
+### 7.2 Aggregated Layer — Postgres (`infra/postgres/02_streaming_schema.sql`)
 
-Table: `streamcore_raw.events`
+`streamcore_aggregated.*` — the Spark job's silver layer, written by `foreachBatch` upserts:
 
-Purpose: store original Kafka events without losing detail.
-
-Key design choice: event payloads are stored as `JSONB`.
-
-Why this matters:
-
-- Event schemas can evolve without immediately changing table columns.
-- Raw data is preserved for reprocessing.
-- Consumers and analytics can query nested fields when needed.
-
-Important columns:
-
-| Column | Purpose |
-|---|---|
-| `id` | Internal surrogate key |
-| `event_id` | Unique producer event id |
-| `event_type` | Event type discriminator |
-| `event_timestamp` | When the event happened |
-| `payload` | Full original event as JSONB |
-| `ingested_at` | When Postgres received the event |
-| `kafka_topic` | Source Kafka topic |
-| `kafka_partition` | Source Kafka partition |
-| `kafka_offset` | Source Kafka offset |
-
-Indexes:
-
-- Event type + timestamp index.
-- Ingestion timestamp index.
-- JSONB GIN index for querying inside payloads.
-
-### 7.2 Aggregated Layer
-
-Defined in `infra/postgres/02_streaming_schema.sql`.
-
-Schema: `streamcore_aggregated`
-
-Tables:
-
-| Table | Purpose | Primary Key |
+| Table | Primary key | Columns of note |
 |---|---|---|
-| `concurrent_viewers` | Count unique sessions watching each video in 30-second windows | `window_start`, `video_id` |
-| `buffering_rate` | Calculate buffering percentage by device type in 1-minute windows | `window_start`, `device_type` |
-| `top_videos` | Count video views in 5-minute windows | `window_start`, `video_id` |
+| `concurrent_viewers` | `(window_start, video_id)` | `concurrent_viewers` |
+| `buffering_rate` | `(window_start, device_type)` | `total_events`, `buffering_events`, `buffering_rate_pct NUMERIC(5,2)` |
+| `top_videos` | `(window_start, video_id)` | `video_title`, `view_count` |
+
+All three have a `written_at TIMESTAMPTZ DEFAULT NOW()`, updated by the upsert's
+`SET ..., written_at = NOW()`.
+
+### 7.3 Warehouse — ClickHouse, via dbt (see §9)
+
+`streamcore_staging` → `streamcore_intermediate` → `streamcore_marts` databases, built entirely
+by dbt from a live federated read of `streamcore_raw.events` — no separate ingestion pipeline.
 
 ---
 
-## 8. Configuration
+## 8. Configuration (`producers/core/config.py`)
 
-Configuration is handled through `producers/core/config.py` using `pydantic-settings`.
+`pydantic-settings` classes, each wrapped in an `@lru_cache`d getter (singleton — first call
+loads `.env`, later calls return the cached instance). Fail-fast: invalid/missing config raises
+at import/startup, not later during a run.
 
-Configuration groups:
-
-| Settings class | Environment prefix | Purpose |
+| Settings class | Env prefix | Key fields |
 |---|---|---|
-| `KafkaSettings` | `KAFKA_` | Kafka brokers, topic names, client id |
-| `PostgresSettings` | `POSTGRES_` | Host, port, database, user, password, DSN |
-| `ProducerSettings` | `PRODUCER_` | Event rate, number of simulated users/videos |
-| `AppSettings` | none | App environment and log level |
+| `KafkaSettings` | `KAFKA_` | `bootstrap_servers`, `topic_view_events`, `topic_watch_events`, `client_id` |
+| `PostgresSettings` | `POSTGRES_` | `host`, `port`, `db`, `user`, `password`; exposes `.dsn` |
+| `ClickHouseSettings` | `CLICKHOUSE_` | `host`, `port` (8123, HTTP interface), `db`, `user`, `password` |
+| `DataQualitySettings` | `DATA_QUALITY_` | `freshness_threshold_minutes` (default 15) |
+| `ProducerSettings` | `PRODUCER_` | `events_per_second`, `simulated_users`, `simulated_videos` |
+| `AppSettings` | none | `app_env`, `log_level` |
 
-The project contains a `.env` file. I intentionally treated it as sensitive configuration and did not copy values into this document.
-
-Important note: `README.md` references `.env.example`, but the scan found `.env`, not `.env.example`.
+`.env.example` at the repo root mirrors every one of these fields with its default value —
+copying it to `.env` with no edits is a valid local setup.
 
 ---
 
-## 9. Docker Compose Stack
+## 9. dbt Project (`streamcore_dbt/`) — Targets ClickHouse
 
-Defined in `docker-compose.yml`.
+This project originally targeted BigQuery on the roadmap; it now targets **ClickHouse** instead.
+Nothing upstream changed to make this work — Kafka, the consumer, and the Spark job still write
+to Postgres exactly as before.
 
-Services:
+### 9.1 The Postgres bridge (why no new ingestion pipeline was needed)
 
-| Service | Image | Purpose | Local Port |
+`macros/postgres_bridge.sql` defines two macros, wired into `dbt_project.yml`'s `on-run-start`
+hooks (two macros because dbt runs each `on-run-start` entry as one statement, and
+`CREATE DATABASE` / `CREATE TABLE` can't be combined):
+
+1. `create_raw_events_database()` — `CREATE DATABASE IF NOT EXISTS streamcore_raw` inside
+   ClickHouse.
+2. `create_raw_events_bridge_table()` — creates `streamcore_raw.events` **inside ClickHouse**
+   using ClickHouse's `PostgreSQL` table engine, pointed at the real Postgres table. This is a
+   **live federated view**, not a copy — every query against it round-trips to Postgres. The
+   embedded host is hardcoded to `'postgres:5432'` because that string is resolved by the
+   *ClickHouse server* (always on the Docker network), not by whichever machine happens to run
+   `dbt build` (a developer's laptop, or the Airflow container) — so it stays correct either way.
+
+Both hooks are idempotent (`IF NOT EXISTS`) since they run on every single `dbt build`.
+
+`source('streamcore_raw', 'events')` in `models/staging/sources.yml` then reads through this
+bridge exactly like any normal ClickHouse table.
+
+### 9.2 Dialect differences from Postgres
+
+Because the bridge table's `payload` column arrives as a plain ClickHouse `String` (raw JSON
+text, not a native JSONB type), and because ClickHouse's SQL dialect differs from Postgres's in
+several other places, every model had to be written (not just copy-pasted) for ClickHouse:
+
+| Postgres | ClickHouse | Used in |
+|---|---|---|
+| `payload->>'field'` / `(payload->>'x')::int` | `JSONExtractString(payload, 'field')`, `JSONExtractInt(...)`, also `JSONExtractBool`/`JSONExtractFloat`, and `JSONExtract(payload, 'field', 'Nullable(String)')` for genuinely-optional fields | `stg_video_views.sql`, `stg_watch_progress.sql` |
+| `extract(epoch from (a - b))` | `dateDiff('second', b, a)` | `int_watch_sessions.sql` |
+| `count(*) filter (where ...)` | `countIf(...)` | `int_watch_sessions.sql`, both marts |
+| `x::numeric / y` | `x / y` (ClickHouse's `/` is always float division, no cast needed) | `int_watch_sessions.sql` |
+| `nullif(x, y)` | `nullIf(x, y)` (camelCase) | `int_watch_sessions.sql` |
+
+### 9.3 `generate_schema_name` override
+
+`macros/generate_schema_name.sql` overrides dbt's default behavior, which otherwise
+*concatenates* the profile's base schema with each model's `+schema` config (e.g.
+`streamcore_staging` would become `<base_schema>_streamcore_staging`). Every model here sets an
+explicit `+schema`, and the override makes that name used exactly as written. This is dbt's own
+documented pattern for this exact situation.
+
+### 9.4 Layering
+
+Materializations are set once in `dbt_project.yml`, not per-model:
+
+**Staging** (views, schema `streamcore_staging`) — 1:1 cleaned windows over the raw source, no
+joins or aggregation:
+- `stg_video_views.sql` — one row per `video_view` event, all payload fields extracted and typed.
+- `stg_watch_progress.sql` — one row per `watch_progress` event.
+
+**Intermediate** (tables, schema `streamcore_intermediate`):
+- `int_watch_sessions.sql` — the load-bearing model almost every mart builds on. Aggregates all
+  progress ticks per `(session_id, video_id)` into one row: `watch_duration_seconds`
+  (`dateDiff`), `completion_pct` (`max_position_seconds / video_duration_seconds`, capped at
+  100), `is_completed` (≥ 90% watched), `buffering_rate_pct`, `dominant_quality`,
+  `avg_playback_rate` — then left-joins back to the originating view event for video/device/
+  country metadata.
+
+**Marts** (tables, schema `streamcore_marts`):
+- `mart_content_performance.sql` — per-video: `total_views`, `unique_viewers`,
+  `avg_completion_pct`, `completion_rate_pct`, device/traffic-source breakdowns, plus
+  `rank() over (...)` window functions for views and completion. Audience: content/product.
+- `mart_device_quality.sql` — per `(device_type, country_code)`: buffering stats, quality-level
+  distribution (4k/1080p/720p/low), and a `buffering_status` flag (`critical` > 15%,
+  `warning` > 8%, else `healthy`). Audience: engineering.
+
+### 9.5 Two dbt profiles, one difference
+
+`streamcore_dbt/profiles.example.yml` (copy to `~/.dbt/profiles.yml` for host-side use) connects
+to ClickHouse at `localhost:8123`. `airflow/profiles/profiles.yml` connects to the `clickhouse`
+service by its Docker network hostname instead — used only inside the Airflow container. Nothing
+else differs between them; both read credentials from environment variables.
+
+---
+
+## 10. Data Quality (Slice 6) — Three Independent Layers
+
+Each layer catches something the other two structurally cannot:
+
+**1. dbt source freshness** (`streamcore_dbt/models/staging/sources.yml`) — `loaded_at_field:
+ingested_at` (when *we* received the event, not when it happened — catches a stuck consumer,
+not simulated event-time drift), `warn_after: 15 min`, `error_after: 60 min`. Run via
+`dbt source freshness`. Only checks staleness, and needs the ClickHouse bridge table to already
+exist (source freshness doesn't run `on-run-start` hooks by default in this dbt version), so a
+`dbt build` must have run at least once first.
+
+**2. dbt singular tests** (`streamcore_dbt/tests/*.sql`) — three assertions that run as part of
+every `dbt build`:
+- `assert_completion_pct_in_range.sql` — `completion_pct` must stay in `[0, 100]`.
+- `assert_buffering_rate_pct_in_range.sql` — same for `buffering_rate_pct`.
+- `assert_no_negative_watch_duration.sql` — `watch_duration_seconds` must never be negative.
+
+**3. `quality/checks.py`** (entry point: `scripts/run_data_quality_checks.py`) — the only layer
+that runs **independently of dbt entirely**:
+- `check_raw_events_freshness()` — queries Postgres directly for
+  `max(ingested_at)` on `streamcore_raw.events`, compared against
+  `DataQualitySettings.freshness_threshold_minutes`. This is the root-cause signal: if the
+  producer/consumer die, everything downstream (Spark aggregates, the ClickHouse bridge, every
+  dbt model) goes stale too — checking here catches it earliest, before dbt is even involved.
+- `check_mart_tables_not_empty()` — queries ClickHouse directly for row counts on
+  `mart_content_performance` and `mart_device_quality`. Exists specifically because `dbt build`
+  can report "Completed successfully" even when a mart ends up empty (an empty result set isn't
+  a SQL error) — e.g. if the bridge table silently failed to connect.
+- `run_all_checks()` returns every result (not just failures); `scripts/run_data_quality_checks.py`
+  logs each one via `structlog` and exits non-zero if any failed.
+
+Runs as the second task in the Airflow DAG (`data_quality_checks`, after `dbt_build`) — see §11.
+
+---
+
+## 11. Airflow Batch Orchestration (`airflow/`)
+
+Its own docker-compose service, built from `airflow/Dockerfile` (the official
+`apache/airflow:2.9.3-python3.11` image plus `dbt-clickhouse`, `psycopg[binary]`,
+`clickhouse-connect`, `pydantic`, `pydantic-settings`, `python-dotenv`, `structlog` —
+deliberately **not** the whole app via `pip install -e .`, which would also drag in
+`pyspark`/`confluent-kafka` for no reason). Runs in Airflow's `standalone` mode: one container,
+webserver + scheduler + auto-created admin user.
+
+`airflow/dags/streamcore_dbt_dag.py` — DAG `streamcore_dbt_batch`, `@hourly`, `catchup=False`,
+two `BashOperator` tasks:
+
+```
+dbt_build  >>  data_quality_checks
+```
+
+- `dbt_build`: `cd streamcore_dbt && dbt build --profiles-dir /opt/airflow/dbt_profiles` — this
+  is `dbt run` + `dbt test` in dependency order, so a broken model or a failed singular/schema
+  test fails the task instead of silently shipping bad data to the marts.
+- `data_quality_checks`: `cd /opt/airflow/streamcore && python -m scripts.run_data_quality_checks`
+  — needs `producers.*`/`quality.*`/`scripts.*` importable, which is why docker-compose bind-mounts
+  `./producers`, `./quality`, `./scripts` (all read-only) into the container and sets
+  `PYTHONPATH=/opt/airflow/streamcore`.
+
+`BashOperator` (shelling out) was chosen over a dedicated dbt provider like `astronomer-cosmos`
+deliberately — Cosmos turns each dbt model into its own Airflow task with full lineage in the UI
+(the production-grade answer), but that's a second tool to learn on top of Airflow itself; this
+starts with the simplest thing that works.
+
+Airflow's own metadata tables share the same Postgres instance as the app data, landing in the
+default `public` schema (not `streamcore_raw`/`streamcore_aggregated`), so they don't collide.
+
+**Two Apple Silicon / Docker notes worth knowing if you touch this service:**
+- No `platform: linux/amd64` pin on the `airflow` service (unlike every other service in
+  `docker-compose.yml`) — the official image publishes native `linux/arm64` builds, and forcing
+  `amd64` here means every one of Airflow's processes runs under Rosetta emulation, which made
+  first boot pathologically slow in practice.
+- The `streamcore_dbt` bind mount is **not** `:ro` — dbt writes its own `logs/`/`target/` output
+  back into that directory (both gitignored); a read-only mount there makes `dbt build` fail
+  with `OSError: [Errno 30] Read-only file system`.
+
+---
+
+## 12. Metabase Dashboards (Slice 6)
+
+The `metabase` docker-compose service connects to **Postgres**, not ClickHouse — Metabase ships
+a native Postgres driver, but ClickHouse needs an extra driver plugin it doesn't bundle by
+default, so visualizing `streamcore_aggregated.*` (the Spark job's real-time tables — exactly
+what they're built for) was the zero-extra-setup option. Visualizing the ClickHouse marts would
+need the `metabase-clickhouse-driver` plugin JAR dropped into a mounted plugins directory — not
+done here, since it requires downloading a binary from GitHub releases rather than anything
+scriptable through Docker Compose alone.
+
+Metabase uses its own embedded H2 app-db (`MB_DB_FILE=/metabase-data/metabase.db`) rather than a
+second Postgres instance — simplest choice for local dev — persisted via the `metabase-data`
+named volume so dashboards survive a container recreate.
+
+**Operational note on that H2 file**: Metabase's own runtime stores the actual `.mv.db`/
+`.trace.db` files *inside* a directory literally named `metabase.db` (i.e.
+`/metabase-data/metabase.db/metabase.db.mv.db`), not as a flat file at the path given by
+`MB_DB_FILE`. Any ad-hoc H2 CLI query against the literal `MB_DB_FILE` path (skipping Metabase's
+own internal path handling) silently creates and queries a *separate, empty* database instead of
+erroring — worth knowing before concluding "the database is empty" from a raw H2 query. The
+`java -jar metabase.jar reset-password <email>` CLI subcommand has the same issue. To interact
+with the real database directly (e.g. to recover from a lost admin password), stop the container
+first to release its file lock, then point an H2 shell explicitly at the nested path.
+
+---
+
+## 13. Docker Compose Stack (`docker-compose.yml`)
+
+| Service | Image | Port(s) | Purpose |
 |---|---|---|---|
-| `zookeeper` | `confluentinc/cp-zookeeper:7.7.0` | Kafka coordination | internal only |
-| `kafka` | `confluentinc/cp-kafka:7.7.0` | Local Kafka broker | `9092` |
-| `kafka-ui` | `provectuslabs/kafka-ui:latest` | Browser UI for Kafka topics/messages | `8080` |
-| `postgres` | `postgres:16-alpine` | Local database for raw and aggregate tables | `5432` |
+| `zookeeper` | `confluentinc/cp-zookeeper:7.7.0` | internal | Kafka cluster coordination |
+| `kafka` | `confluentinc/cp-kafka:7.7.0` | `9092` | Single-broker Kafka |
+| `kafka-ui` | `provectuslabs/kafka-ui:latest` | `8080` | Browser UI for topics/messages |
+| `postgres` | `postgres:16-alpine` | `5432` | Raw events + streaming aggregates + Airflow metadata |
+| `clickhouse` | `clickhouse/clickhouse-server:24.3` | `8123` (HTTP/dbt), `9000` (native) | dbt's warehouse |
+| `airflow` | built from `./airflow` | `8081`→`8080` | Hourly `dbt build` + data-quality task |
+| `metabase` | `metabase/metabase:v0.50.34` | `3000` | Dashboards on Postgres |
 
-The Postgres service mounts `./infra/postgres` into `/docker-entrypoint-initdb.d`, so the SQL files are auto-executed when the database volume is first initialized.
-
----
-
-## 10. dbt Area
-
-The actual dbt project is under `streamcore_dbt/`.
-
-Current state:
-
-| File/Directory | Purpose |
-|---|---|
-| `streamcore_dbt/dbt_project.yml` | dbt project configuration |
-| `streamcore_dbt/README.md` | Default starter dbt README |
-| `streamcore_dbt/models/example/my_first_dbt_model.sql` | Starter model with sample rows |
-| `streamcore_dbt/models/example/my_second_dbt_model.sql` | Starter model referencing the first model |
-| `streamcore_dbt/models/example/schema.yml` | dbt tests and model descriptions |
-| `streamcore_dbt/analyses`, `macros`, `seeds`, `snapshots`, `tests` | Standard dbt folders with `.gitkeep` placeholders |
-
-The dbt models are currently starter examples, not StreamCore-specific analytics models yet.
-
-The logs show two useful facts:
-
-1. Running dbt from the repository root failed because no root-level `dbt_project.yml` exists.
-2. Running dbt from `streamcore_dbt/` later succeeded in `dbt debug` with user `streamcore`.
+All services except `airflow` are pinned to `platform: linux/amd64` (see §11 for why `airflow`
+is the exception). Postgres auto-runs everything in `./infra/postgres/` on first volume init.
+Named volumes: `postgres-data`, `clickhouse-data`, `airflow-logs`, `metabase-data`.
 
 ---
 
-## 11. Tests
+## 14. Tests (`tests/`, `pytest -q`, 37 tests total)
 
-Test file: `tests/test_simulator.py`
-
-Coverage areas:
-
-| Test area | What it checks |
+| File | Covers |
 |---|---|
-| Schema immutability | Events cannot be modified after creation |
-| Country code validation | Country code must be exactly two characters |
-| Session event order | A session starts with a `VideoViewEvent`, followed by progress events |
-| Progress ordering | Watch progress positions increase by 10 seconds |
-| Infinite generator | Event generator keeps yielding events |
+| `test_simulator.py` | Event immutability, country-code validation, session event ordering (view → progress events, 10s increments), infinite generator behavior |
+| `test_topic_registry.py` | Event → topic routing, `KeyError` on unregistered event types |
+| `test_kafka_client.py` | `KafkaProducerClient` serialization, delivery callback handling, key-by-`user_id` partitioning |
+| `test_postgres_sink.py` | Batch buffering/flush threshold, `ON CONFLICT DO NOTHING` upsert shape |
+| `test_consumer.py` | `StreamCoreConsumer` message handling, and a **regression test for the offset-commit bug** (§5.2) — asserts `commit()` is actually called, not just `store_offsets()` |
+| `test_quality_checks.py` | `quality/checks.py`'s freshness and mart-volume checks, mocking `psycopg`/`clickhouse_connect` |
 
-I attempted to run `pytest -q`, but the current shell does not have `pytest` installed or available, so tests could not be executed in this environment.
-
----
-
-## 12. File-by-File Explanation
-
-### Root files
-
-| File | Explanation |
-|---|---|
-| `.env` | Local configuration; should not be committed with real secrets |
-| `.gitignore` | Currently effectively empty |
-| `HEAD` | Git metadata pointing to `refs/heads/main` |
-| `README.md` | Main project overview and roadmap |
-| `__init__.py` | Marks root as Python package; currently empty |
-| `config` | Git repository metadata, not app configuration |
-| `description` | Git repository description metadata |
-| `docker-compose.yml` | Defines local Kafka/Zookeeper/Kafka UI/Postgres stack |
-| `pyproject.toml` | Python dependencies and tooling configuration |
-
-### Producer files
-
-| File | Explanation |
-|---|---|
-| `producers/__init__.py` | Empty package marker |
-| `producers/core/__init__.py` | Empty package marker |
-| `producers/core/config.py` | Central settings module using Pydantic |
-| `producers/core/kafka_client.py` | Kafka producer adapter with serialization, delivery callbacks, flush handling |
-| `producers/core/logging_setup.py` | `structlog` setup for local console or JSON production logging |
-| `producers/core/topic_registry.py` | Single source of truth for event-to-topic routing |
-| `producers/events/__init__.py` | Empty package marker |
-| `producers/events/schemas.py` | Pydantic event models/enums |
-| `producers/events/simulator.py` | Realistic user/video/session event generator |
-
-### Consumer files
-
-| File | Explanation |
-|---|---|
-| `consumers/__init__.py` | Empty package marker |
-| `consumers/core/__init__.py` | Empty package marker |
-| `consumers/core/consumer.py` | Kafka consumer loop and sink routing |
-| `consumers/sinks/__init__.py` | Empty package marker |
-| `consumers/sinks/postgres_sink.py` | Batched Postgres writer for raw events |
-
-### Duplicate/legacy-looking files
-
-| File | Explanation |
-|---|---|
-| `core/__init__.py` | Empty package marker |
-| `core/consumer.py` | Duplicate of the consumer implementation, with one config difference |
-| `sinks/__init__.py` | Empty package marker |
-| `sinks/postgres_sink.py` | Duplicate of `consumers/sinks/postgres_sink.py` |
-
-The main scripts import from `consumers.*`, not from the top-level `core/` or `sinks/` packages. The top-level duplicates should be reviewed and probably removed or consolidated to avoid confusion.
-
-### Streaming files
-
-| File | Explanation |
-|---|---|
-| `streaming/core/spark_session.py` | Builds a singleton SparkSession configured with the Spark Kafka connector |
-| `streaming/jobs/watch_aggregator.py` | Main Structured Streaming job with Kafka reads, parsing, aggregations, and Postgres writes |
-
-### Scripts
-
-| File | Explanation |
-|---|---|
-| `scripts/__init__.py` | Empty package marker |
-| `scripts/run_producer.py` | CLI entry point for Kafka producer |
-| `scripts/run_consumer.py` | CLI entry point for Kafka consumer |
-| `scripts/run_streaming.py` | CLI entry point for PySpark streaming job |
-
-### Infrastructure files
-
-| File | Explanation |
-|---|---|
-| `infra/postgres/01_init_schema.sql` | Creates raw event schema/table/indexes |
-| `infra/postgres/02_streaming_schema.sql` | Creates aggregate schema/tables |
-| `infra/kafka/` | Empty placeholder for future Kafka topic configs |
-
-### dbt files
-
-| File | Explanation |
-|---|---|
-| `streamcore_dbt/.gitignore` | dbt-specific ignore rules |
-| `streamcore_dbt/README.md` | Starter dbt README |
-| `streamcore_dbt/dbt_project.yml` | dbt project definition |
-| `streamcore_dbt/models/example/my_first_dbt_model.sql` | Starter example model |
-| `streamcore_dbt/models/example/my_second_dbt_model.sql` | Starter model referencing first model |
-| `streamcore_dbt/models/example/schema.yml` | dbt model tests and documentation |
-| `streamcore_dbt/*/.gitkeep` | Keeps empty dbt directories in git |
-
-### Tests and logs
-
-| File | Explanation |
-|---|---|
-| `tests/__init__.py` | Empty package marker |
-| `tests/test_simulator.py` | Tests event schemas and simulator behavior |
-| `logs/dbt.log` | dbt debug log from repository root; shows root-level dbt project missing and an earlier DB auth failure |
-| `streamcore_dbt/logs/dbt.log` | dbt debug log from inside dbt project; shows successful connection |
-
-### Git metadata files
-
-The scan found Git metadata at the project root:
-
-- `HEAD`
-- `config`
-- `description`
-- `hooks/`
-- `objects/`
-- `refs/`
-- `info/exclude`
-
-These are not StreamCore application files. They look like a bare Git repository structure mixed into the project root. This is worth reviewing because it is unusual for normal source trees.
-
----
-
-## 13. Current Implementation Status
-
-| Area | Status |
-|---|---|
-| Event schemas | Good foundation |
-| Event simulation | Good foundation with realistic behavior |
-| Kafka producer | Implemented with production-style adapter pattern |
-| Kafka consumer | Implemented, but offset commit behavior needs review |
-| Raw Postgres sink | Implemented with batch inserts and JSONB payloads |
-| PySpark streaming | Implemented with three useful aggregations |
-| Aggregate Postgres tables | Implemented |
-| dbt | Starter project only |
-| Airflow | Placeholder only |
-| Kafka topic configs | Placeholder only |
-| Tests | Present but not run in current shell because `pytest` is unavailable |
-| Documentation | README plus this generated document |
-
----
-
-## 14. Important Observations and Risks
-
-### 14.1 Kafka consumer offset handling needs review
-
-The consumer comments describe manual offset commits, but the implementation calls `store_offsets(msg)` and does not call `commit()`.
-
-With `enable.auto.commit` set to `False`, offsets may not actually be committed to Kafka. This could cause the consumer to reprocess messages after restart.
-
-Recommended fix direction:
-
-- After a successful sink write, explicitly call `commit(message=msg, asynchronous=False)` or a suitable asynchronous commit strategy.
-- Keep `enable.auto.offset.store=False` if you want full manual control.
-
-### 14.2 Duplicate consumer/sink modules
-
-There are duplicated files:
-
-- `consumers/core/consumer.py`
-- `core/consumer.py`
-- `consumers/sinks/postgres_sink.py`
-- `sinks/postgres_sink.py`
-
-This can confuse future development. Pick one package layout and remove the duplicate.
-
-### 14.3 `.env.example` is referenced but not present
-
-`README.md` says to copy `.env.example` to `.env`, but the scan found `.env` only.
-
-Recommended fix direction:
-
-- Add `.env.example` with safe template values.
-- Add `.env` to `.gitignore`.
-
-### 14.4 `.gitignore` is effectively empty
-
-The project should ignore at least:
-
-- `.env`
-- `.venv/`
-- `__pycache__/`
-- `.pytest_cache/`
-- `logs/`
-- `streamcore_dbt/logs/`
-- Spark checkpoints
-- dbt `target/` and `dbt_packages/`
-
-### 14.5 dbt folder mismatch
-
-The root has an empty `dbt/` directory, but the actual dbt project is `streamcore_dbt/`.
-
-Recommended fix direction:
-
-- Either rename `streamcore_dbt/` to `dbt/`, or update documentation to consistently point to `streamcore_dbt/`.
-
-### 14.6 Airflow is not implemented yet
-
-`airflow/dags/` exists but contains no DAGs. The README roadmap correctly describes Airflow as future work.
-
-### 14.7 dbt models are still starter examples
-
-The current dbt models do not model StreamCore event data yet.
-
-Useful next dbt models could include:
-
-- `stg_events`
-- `stg_video_views`
-- `stg_watch_progress`
-- `mart_video_engagement`
-- `mart_device_quality`
+All mock external I/O (`confluent_kafka`, `psycopg`, `clickhouse_connect`) — no test requires the
+Docker stack to be running.
 
 ---
 
 ## 15. How to Run Locally
 
-### 15.1 Start infrastructure
+```bash
+cp .env.example .env
+docker compose up -d
 
-Command: `docker compose up -d`
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 
-Then open Kafka UI at `http://localhost:8080`.
+# Three long-lived processes, one per terminal:
+python -m scripts.run_producer
+python -m scripts.run_consumer
+python -m scripts.run_streaming
 
-### 15.2 Install Python dependencies
+# dbt, once data has flowed through:
+pip install -e ".[dbt]"
+cp streamcore_dbt/profiles.example.yml ~/.dbt/profiles.yml
+cd streamcore_dbt && dbt build
 
-Command: `python -m venv .venv`
+# Standalone data-quality check + dashboards:
+python -m scripts.run_data_quality_checks
+open http://localhost:3000   # Metabase
+open http://localhost:8081   # Airflow UI
+open http://localhost:8080   # Kafka UI
+```
 
-Command: `source .venv/bin/activate`
-
-Command: `pip install -e ".[dev]"`
-
-### 15.3 Run the producer
-
-Command: `python -m scripts.run_producer`
-
-### 15.4 Run the consumer
-
-In a second terminal:
-
-Command: `python -m scripts.run_consumer`
-
-### 15.5 Run the streaming job
-
-In a third terminal:
-
-Command: `python -m scripts.run_streaming`
-
-### 15.6 Run tests
-
-After installing dev dependencies:
-
-Command: `pytest -q`
-
-### 15.7 Run dbt debug
-
-From inside the dbt project:
-
-Command: `cd streamcore_dbt`
-
-Command: `dbt debug`
+`pytest -q`, `ruff check .`, `mypy .` for tests/lint/types — see `CLAUDE.md` for the full command
+reference, including single-test invocation and dbt-specific commands.
 
 ---
 
 ## 16. Teaching Explanation: How the Pieces Fit Together
 
-Imagine a streaming app like Netflix.
+Imagine a streaming app like Netflix. When a user presses play, the app emits a `video_view`
+event; while the video plays, it emits `watch_progress` events every few seconds. `StreamCore`
+simulates that behavior locally, at whatever rate `PRODUCER_EVENTS_PER_SECOND` is set to.
 
-When a user presses play, the app emits a `video_view` event. While the video keeps playing, the app emits `watch_progress` events every few seconds.
+Kafka is the durable event highway — producers write once, and two independent readers (the
+consumer, and the Spark job) each read the full stream at their own pace, unaware of each other.
 
-`StreamCore` simulates that behavior locally.
+Postgres plays two distinct roles: the bronze/raw landing zone (`streamcore_raw.events`,
+untouched JSONB, kept forever for reprocessing) and the silver/real-time aggregate layer
+(`streamcore_aggregated.*`, continuously upserted by Spark).
 
-Kafka acts like a durable event highway. Producers write events to Kafka topics. Consumers and Spark jobs read from those topics independently.
+ClickHouse+dbt is the batch analytical/gold layer: rather than duplicate ingestion, ClickHouse
+simply queries live through to the same Postgres raw table via a federated table engine, and dbt
+builds proper dimensional models (staging → intermediate → marts) on top of that single source
+of truth. Airflow's only job is to run that batch step on a schedule and give one place to see
+whether the last run succeeded — the always-on streaming path doesn't depend on Airflow being up
+at all.
 
-Postgres has two roles:
-
-1. It stores raw events exactly as received.
-2. It stores processed aggregate metrics for dashboards.
-
-PySpark Structured Streaming is the real-time analytics engine. It continuously reads Kafka events and updates metrics in small time windows.
-
-dbt is intended to become the transformation and semantic modeling layer, but right now it is still a starter scaffold.
+Data quality is deliberately layered three ways rather than trusting any single signal: dbt's own
+test framework catches bad *values*; the standalone `quality/` checks catch a *stopped pipeline*
+or a *silently empty* mart — failure modes dbt's pass/fail alone can't see.
 
 ---
 
-## 17. Recommended Next Steps
+## 17. Notable Bugs Found and Fixed During Development
 
-Priority order:
+These are documented here because they were non-obvious and worth knowing about if you're
+extending the code, not because they're still open:
 
-1. Add `.env.example` and update `.gitignore`.
-2. Fix Kafka consumer offset commit behavior.
-3. Remove duplicate `core/` and `sinks/` modules or consolidate imports.
-4. Add unit tests for `TopicRegistry`, `KafkaProducerClient` serialization, and `PostgresSink` batching.
-5. Add dbt models that actually read from `streamcore_raw.events` and `streamcore_aggregated.*`.
-6. Add Airflow DAGs only after the pipeline pieces are stable.
-7. Add a dashboard layer such as Metabase or Superset.
-8. Add data quality checks for event freshness, schema validity, and aggregate sanity.
+1. **Kafka consumer offsets were never actually committed.** `store_offsets(msg)` was called
+   without a following `commit()` — offsets were staged locally but never sent to the broker,
+   so a restart would replay the entire topic. Fixed in `consumers/core/consumer.py`; regression
+   test in `tests/test_consumer.py`.
+2. **`pyspark` resolved to an incompatible major version.** An unbounded `pyspark>=3.5.0` in
+   `pyproject.toml` resolved to 4.2.0, which crashes the streaming job at runtime
+   (`NoSuchMethodError: scala.Predef$.wrapRefArray`) against the hardcoded Scala 2.12 Kafka
+   connector. Only surfaced by actually running the job end-to-end. Fixed by pinning
+   `pyspark>=3.5.0,<4.0.0` (see §5.3).
+3. **`pip install -e ".[dev]"` failed at the metadata step.** hatchling couldn't infer wheel
+   contents because the project name (`streamcore`) doesn't match any single top-level package.
+   Fixed by adding an explicit `[tool.hatch.build.targets.wheel] packages = [...]` list.
+4. **A stray, uncommitted-looking dump of `.git` internals** (`HEAD`, `config`, `hooks/*.sample`,
+   `objects/**`, `refs/**`) previously existed at the repo root alongside the real `.git/` —
+   removed; `.gitignore` guards against recurrence.
+5. **Legacy duplicate `core/`/`sinks/` packages** at the repo root (pre-`consumers/` restructure)
+   were removed — everything now imports from `consumers.*`/`producers.*` only.
 
 ---
 
 ## 18. One-Sentence Summary
 
-`StreamCore` is a local, educational, production-inspired streaming analytics platform that generates fake video events, sends them through Kafka, stores them in Postgres, and computes real-time viewing metrics with PySpark.
+`StreamCore` is a local, educational, production-inspired streaming analytics platform that
+generates fake video events, pushes them through Kafka, stores them in Postgres, computes
+real-time viewing metrics with PySpark, and separately builds a ClickHouse/dbt warehouse with
+its own orchestration (Airflow) and data-quality safety net — all runnable end-to-end on a
+laptop.
